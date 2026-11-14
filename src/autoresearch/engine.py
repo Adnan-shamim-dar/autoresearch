@@ -73,6 +73,9 @@ class RunConfig:
     key_path: str | Path | None = None
     event_sink: Callable[[dict[str, Any]], None] | None = None
     mode: str = "separate_process_label_service"
+    # Spec §11 agent tool: verify(contract, data, candidate). When set, no
+    # search runs; this one candidate is evaluated, priced at K=1, confirmed.
+    fixed_candidate: dict[str, Any] | None = None
     limitations: list[str] = field(default_factory=list)
 
 
@@ -89,7 +92,6 @@ class Engine:
     def __init__(self, config: RunConfig):
         self.config = config
         self.run_dir = self._fresh_run_dir(Path(config.run_dir))
-        self._suffix = self.run_dir.name[len(Path(config.run_dir).name):]
         self.registry = Registry(config.registry_root)
         self.events: list[dict[str, Any]] = []
         self._seq = 0
@@ -131,7 +133,10 @@ class Engine:
         return ensure_dir(candidate)
 
     def _run_id(self, contract: Contract) -> str:
-        return f"ar-{contract.hash[:8]}-{self.config.run_seed}{self._suffix}"
+        # The run directory name is the run id: callers name it from the
+        # contract hash and seed (plus a purpose suffix such as -v<candidate>),
+        # and _fresh_run_dir appends -rN for repeats.
+        return self.run_dir.name
 
     def _provenance(self, contract: Contract, meta: dict[str, Any], access_trace: list[dict[str, Any]]) -> dict[str, Any]:
         discovery_hash = sha256_file(self.config.discovery_path)
@@ -254,6 +259,31 @@ class Engine:
         return files
 
     @staticmethod
+    def _fixed_candidate(spec: dict[str, Any], fm: FeatureMatrix) -> Candidate:
+        """Accept a full candidate dict or a short spec {weights, transforms?, mechanism?}."""
+        if "params" in spec and "id" in spec:
+            cand = Candidate.from_dict(spec)
+            if not cand.params.get("fit_stats"):
+                cand.params["fit_stats"] = fm.export_fit_stats(list(cand.params.get("weights", {})))
+            return cand
+        weights = spec.get("weights") or {}
+        if not weights:
+            raise ContractError("invalid_candidate", "A pre-specified candidate needs non-empty weights")
+        unknown = sorted(set(weights) - {f.name for f in fm.features})
+        if unknown:
+            raise ContractError("invalid_candidate", f"Candidate uses features not in the contract: {unknown}")
+        from .scoring import make_candidate
+
+        return make_candidate(
+            weights,
+            mechanism=str(spec.get("mechanism") or "Pre-specified candidate submitted for verification."),
+            family="prespecified",
+            transforms=spec.get("transforms"),
+            fit_stats=fm.export_fit_stats(list(weights)),
+            source=str(spec.get("source") or "external"),
+        )
+
+    @staticmethod
     def _expires(contract: Contract, meta: dict[str, Any]) -> str | None:
         """Claims age with their data: valid N days from when confirmation was sealed."""
         import datetime as _dt
@@ -278,7 +308,8 @@ class Engine:
             "search": {
                 "candidate_budget": cfg.candidate_budget or budget.max_candidates,
                 "generations": int(cfg.generations or budget.max_generations),
-                "proposers": ["operator_families"] + (["llm"] if cfg.llm else []),
+                "proposers": (["prespecified"] if cfg.fixed_candidate else ["operator_families"] + (["llm"] if cfg.llm else [])),
+                "prespecified_candidate_sha256": sha256_obj(cfg.fixed_candidate) if cfg.fixed_candidate else None,
                 "feedback": "categorical {status, reason_code} via sanitize_feedback",
                 "cv": {"scheme": "group-aware stratified k-fold", "n_splits": int(cfg.n_splits)},
             },
@@ -347,6 +378,16 @@ class Engine:
             baseline=contract.baseline.name,
             effect=contract.decision.smallest_effect_that_matters,
         )
+        if cfg.fixed_candidate is not None:
+            # Reject a malformed candidate before anything is charged to the ledgers.
+            weights = (cfg.fixed_candidate.get("params") or {}).get("weights") or cfg.fixed_candidate.get("weights") or {}
+            unknown = sorted(set(weights) - {f.name for f in contract.features})
+            if not weights or unknown:
+                raise ContractError(
+                    "invalid_candidate",
+                    f"Candidate must weight contract features only; unknown: {unknown}" if unknown
+                    else "A pre-specified candidate needs non-empty weights",
+                )
         atomic_write_text(self.run_dir / "contract.yaml", contract.canonical_yaml())
         atomic_write_json(self.run_dir / "validation.json", contract.validation.to_dict() if contract.validation else {})
 
@@ -390,7 +431,7 @@ class Engine:
             confirmation_n=int(meta["n_rows"]),
             confirmation_groups=int(meta["n_groups"]),
             confirmation_prevalence=meta.get("prevalence"),
-            k_candidates=cfg.candidate_budget or contract.power.k_candidates,
+            k_candidates=1 if cfg.fixed_candidate else (cfg.candidate_budget or contract.power.k_candidates),
             alpha=alpha_run,
             target_power=contract.decision.target_power,
             seed=cfg.run_seed,
@@ -447,7 +488,7 @@ class Engine:
             domain_brief=cfg.domain_brief,
             llm=cfg.llm,
         )
-        n_generations = int(cfg.generations or budget.max_generations)
+        n_generations = 1 if cfg.fixed_candidate else int(cfg.generations or budget.max_generations)
         initial_n = min(48, budget.max_candidates)
         all_candidates: dict[str, Candidate] = {}
         all_results: dict[str, dict[str, Any]] = {}
@@ -461,11 +502,13 @@ class Engine:
             remaining = (cfg.candidate_budget or budget.max_candidates) - proposed_count
             if remaining <= 0:
                 break
-            if gen == 0:
+            if cfg.fixed_candidate is not None:
+                batch = [self._fixed_candidate(cfg.fixed_candidate, fm)]
+            elif gen == 0:
                 batch = proposer.seed_candidates(n=min(initial_n, remaining))
             else:
                 batch = proposer.next_generation(kept, feedback, n=min(40, remaining), generation=gen)
-            if cfg.llm:
+            if cfg.llm and cfg.fixed_candidate is None:
                 try:
                     batch.extend(proposer.llm_candidates(n=min(8, remaining - len(batch)), rejection_history=feedback))
                 except Exception as exc:

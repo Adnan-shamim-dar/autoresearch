@@ -12,6 +12,7 @@ from .contract import ContractError, load_contract
 from .utils import read_json
 
 PROTOCOL_VERSION = "2024-11-05"
+_ROOT = "."
 SERVER_NAME = "autoresearch"
 SERVER_VERSION = "0.1.0"
 
@@ -72,8 +73,31 @@ TOOLS = [
     ),
     _tool(
         "autoresearch_verify",
-        "Verify a certificate",
-        "Verify a claim certificate's hash and HMAC signature, and optionally check its artifact manifest. A reviewer or another agent can call this without trusting the issuer.",
+        "Certify a candidate",
+        "verify(contract, data, candidate) -> certificate. Bring a candidate rule you already have; it is priced at K=1, "
+        "checked on discovery data, confirmed once on the sealed set through the label service, attacked by the "
+        "adversary, and returned as a signed certificate or a refusal. Spends one alpha unit of the sealed dataset's lifetime budget.",
+        {
+            "type": "object",
+            "properties": {
+                "contract_path": {"type": "string"},
+                "data_path": {"type": "string", "description": "Discovery CSV/Parquet"},
+                "candidate": {
+                    "type": "object",
+                    "description": "{weights: {feature: weight}, transforms?: {feature: rank|log_rank|z}, mechanism?: one sentence}",
+                },
+                "root": {"type": "string", "description": "Project root holding vault/ and state/ (default: server root)"},
+                "sealed_dataset": {"type": "string", "description": "Sealed dataset hash (default: demo substrate)"},
+                "vault_key": {"type": "string", "description": "Key path handed to the label-service process"},
+                "seed": {"type": "integer", "default": 12345},
+            },
+            "required": ["contract_path", "data_path", "candidate"],
+        },
+    ),
+    _tool(
+        "autoresearch_check_certificate",
+        "Check a certificate",
+        "Check a claim certificate's hash and HMAC signature. A reviewer or another agent can call this without trusting the issuer.",
         {
             "type": "object",
             "properties": {
@@ -134,6 +158,20 @@ def tool_validate(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def tool_verify(args: dict[str, Any]) -> dict[str, Any]:
+    from .api import verify
+
+    return verify(
+        args["contract_path"],
+        args["data_path"],
+        args["candidate"],
+        root=args.get("root") or _ROOT,
+        sealed_dataset=args.get("sealed_dataset"),
+        vault_key=args.get("vault_key"),
+        seed=int(args.get("seed", 12345)),
+    )
+
+
+def tool_check_certificate(args: dict[str, Any]) -> dict[str, Any]:
     if args.get("certificate"):
         cert = args["certificate"]
     elif args.get("certificate_path"):
@@ -193,6 +231,7 @@ TOOL_HANDLERS = {
     "autoresearch_power": tool_power,
     "autoresearch_validate": tool_validate,
     "autoresearch_verify": tool_verify,
+    "autoresearch_check_certificate": tool_check_certificate,
     "autoresearch_catalog": tool_catalog,
     "autoresearch_run": tool_run,
 }
@@ -322,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=".")
     args = parser.parse_args(argv)
     root = Path(args.root).expanduser().resolve()
+    global _ROOT
+    _ROOT = str(root)
     for stream in (sys.stdin, sys.stdout):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")

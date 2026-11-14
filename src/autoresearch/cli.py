@@ -639,6 +639,31 @@ def cmd_serve(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_verify_candidate(args: argparse.Namespace) -> int:
+    from .api import verify
+
+    root = _root(args)
+    candidate: Any = args.candidate
+    if not Path(candidate).exists():
+        candidate = json.loads(candidate)
+    cert = verify(
+        args.contract,
+        args.discovery,
+        candidate,
+        root=root,
+        sealed_dataset=args.dataset,
+        vault_root=args.vault_root,
+        vault_key=args.key,
+        seed=args.seed,
+        n_permutations=args.permutations,
+    )
+    print(f"run {cert.get('run_id')}: tier={cert.get('tier') or cert.get('status')} verdict={cert.get('verdict')}")
+    print(cert.get("claim", ""))
+    if args.json:
+        _print_json(cert)
+    return 0
+
+
 def cmd_leak_test(args: argparse.Namespace) -> int:
     from .feedback_leak import publish, run_experiment
 
@@ -812,6 +837,21 @@ def build_parser() -> argparse.ArgumentParser:
     # Also accept --root after the subcommand (MCP client configs commonly do).
     mcp.add_argument("--root", dest="root", default=argparse.SUPPRESS, help="Project root")
     mcp.set_defaults(func=cmd_mcp)
+
+    vc = sub.add_parser(
+        "verify-candidate",
+        help="Certify one pre-specified candidate: verify(contract, data, candidate) -> certificate",
+    )
+    vc.add_argument("--contract", required=True)
+    vc.add_argument("--discovery", required=True)
+    vc.add_argument("--candidate", required=True, help="JSON string or path to a JSON file")
+    vc.add_argument("--dataset", help="Sealed dataset hash (default: demo substrate)")
+    vc.add_argument("--vault-root")
+    vc.add_argument("--key", help="Vault key path, handed only to the label-service process")
+    vc.add_argument("--seed", type=int, default=12345)
+    vc.add_argument("--permutations", type=int, default=99)
+    vc.add_argument("--json", action="store_true")
+    vc.set_defaults(func=cmd_verify_candidate)
 
     leak = sub.add_parser("leak-test", help="Run the spec §5 feedback-leak test and publish the result")
     leak.add_argument("--replicates", type=int, default=100)
