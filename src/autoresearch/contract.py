@@ -95,6 +95,12 @@ class DecisionSpec:
     # Spec §12.4: the operating point belongs to the decision, and who set it is recorded.
     alpha_chosen_by: str = "default: 0.05 is a historical accident, not a decision"
     certificate_valid_days: int = 180
+    # When the declared effect is below the minimum detectable effect: "refuse"
+    # (the default, spec §3) or "proceed". Proceeding never weakens the gate's
+    # error control; it spends the single-use sealed set on a question that can
+    # only be answered if the true effect is larger than declared.
+    if_underpowered: str = "refuse"
+    if_underpowered_chosen_by: str = "default: refuse underpowered questions"
 
 
 @dataclass
@@ -293,6 +299,15 @@ class Contract:
         if valid_days < 1:
             raise ContractError("invalid_certificate_valid_days", "decision.certificate_valid_days must be >= 1")
         chosen_by = self.decision_raw.get("alpha_chosen_by")
+        policy = str(self.decision_raw.get("if_underpowered", "refuse")).strip().lower()
+        if policy not in ("refuse", "proceed"):
+            raise ContractError("invalid_if_underpowered", "decision.if_underpowered must be 'refuse' or 'proceed'")
+        policy_by = self.decision_raw.get("if_underpowered_chosen_by")
+        if policy == "proceed" and not policy_by:
+            raise ContractError(
+                "if_underpowered_unattributed",
+                "decision.if_underpowered: proceed must name who chose it (decision.if_underpowered_chosen_by)",
+            )
         self.decision = DecisionSpec(
             action=str(action),
             smallest_effect_that_matters=float(effect),
@@ -301,6 +316,8 @@ class Contract:
             max_runs=max_runs,
             alpha_chosen_by=str(chosen_by) if chosen_by else DecisionSpec.alpha_chosen_by,
             certificate_valid_days=valid_days,
+            if_underpowered=policy,
+            if_underpowered_chosen_by=str(policy_by) if policy_by else DecisionSpec.if_underpowered_chosen_by,
         )
 
     def _parse_power(self) -> None:

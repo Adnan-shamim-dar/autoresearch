@@ -380,6 +380,9 @@ def evaluate_replicate(
         "baseline_auc_confirmation": float(observed["auc_baseline"]),
         "power_verdict": power.verdict,
         "power_mde_search": float(power.mde_search),
+        "power_mde_plain": float(power.mde_plain),
+        "power_se_conf": float(power.se_delta),
+        "se_confirmation": float(observed["se"]),
         "selected_candidate": selected.id,
         "selected_family": selected.family,
         "discovery_delta": float(selected_result["mean_delta"]) if selected_result else None,
@@ -399,7 +402,7 @@ def evaluate_replicate(
         # In-process callers (the benchmark's AutoResearch agent) need the rule itself.
         row["_objects"] = {"candidate": selected, "contract": contract}
 
-    if power.verdict == "NOT_ANSWERABLE" and not payload.get("diagnostic_skip_power_refusal"):
+    if power.verdict == "NOT_ANSWERABLE" and contract.decision.if_underpowered == "refuse":
         row.update(
             {
                 "tier": "power_refusal",

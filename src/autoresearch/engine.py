@@ -506,7 +506,16 @@ class Engine:
             required_n=power.required_n_search,
             max_k=power.max_k_answerable,
         )
-        if power.verdict == "NOT_ANSWERABLE":
+        underpowered_proceed = power.verdict == "NOT_ANSWERABLE" and contract.decision.if_underpowered == "proceed"
+        if underpowered_proceed:
+            self.emit(
+                "power",
+                "proceeding_underpowered",
+                f"Underpowered for the declared {power.effect_that_matters:.3f} (MDE {power.mde_plain:.3f}); proceeding "
+                f"because the contract says so (chosen by: {contract.decision.if_underpowered_chosen_by}). "
+                "Error control is unchanged; a null result will not be evidence of absence.",
+            )
+        if power.verdict == "NOT_ANSWERABLE" and not underpowered_proceed:
             message = power.prescription
             extra_evidence: dict[str, Any] = {}
             if contract.commit_signs:
@@ -959,7 +968,15 @@ class Engine:
                 "Confirmation labels were accessed only through the label service; no row-level labels entered the search process.",
                 "The certificate is conditional on the registered contract and selection rule. Changing either invalidates it.",
                 "A refusal is a first-class output; it is not evidence that the hypothesis is false.",
-            ] + list(cfg.limitations),
+            ] + (
+                [
+                    f"Run proceeded although the declared effect {power.effect_that_matters:.3f} is below the minimum "
+                    f"detectable effect {power.mde_plain:.3f} (if_underpowered: proceed, chosen by "
+                    f"{contract.decision.if_underpowered_chosen_by}). A null result here is not evidence of absence."
+                ]
+                if power is not None and power.verdict == "NOT_ANSWERABLE"
+                else []
+            ) + list(cfg.limitations),
             expires=self._expires(contract, meta),
             key=None,
         )

@@ -367,13 +367,13 @@ def _contract_for(task: Task, disc: pd.DataFrame, confirmation_n: int, k: int) -
     return raw
 
 
-def agent_autoresearch_gate_only(task: Task, seed: int) -> dict[str, Any]:
-    """Diagnostic, not shipped behaviour: the engine with the power oracle's refusal skipped."""
-    return agent_autoresearch(task, seed, skip_power_refusal=True)
+def agent_autoresearch_proceed(task: Task, seed: int) -> dict[str, Any]:
+    """The engine with the contract option ``if_underpowered: proceed``."""
+    return agent_autoresearch(task, seed, if_underpowered="proceed")
 
 
 def agent_autoresearch(task: Task, seed: int, k: int = 32, permutations: int = 39,
-                       skip_power_refusal: bool = False) -> dict[str, Any]:
+                       if_underpowered: str = "refuse") -> dict[str, Any]:
     """The engine: price the search, seal 40% of discovery, confirm one rule, red team, gate."""
     from .calibration import evaluate_replicate
     from .scoring import FeatureMatrix
@@ -386,8 +386,10 @@ def agent_autoresearch(task: Task, seed: int, k: int = 32, permutations: int = 3
         conf[rng.permutation(idx)[: int(round(len(idx) * 0.4))]] = True
     search, sealed = disc[~conf].reset_index(drop=True), disc[conf].reset_index(drop=True)
     raw = _contract_for(task, search, len(sealed), k)
-    payload = {"seed": seed, "target_effect": -1.0, "candidates": k, "permutations": permutations, "return_objects": True,
-               "diagnostic_skip_power_refusal": skip_power_refusal}
+    raw["decision"]["if_underpowered"] = if_underpowered
+    if if_underpowered == "proceed":
+        raw["decision"]["if_underpowered_chosen_by"] = "benchmark agent configuration"
+    payload = {"seed": seed, "target_effect": -1.0, "candidates": k, "permutations": permutations, "return_objects": True}
     row = evaluate_replicate(payload, raw, search, sealed, None, float("nan"))
     if not row.get("ok"):
         return {"claim": False, "detail": {"error": row.get("error")}}
@@ -401,6 +403,8 @@ def agent_autoresearch(task: Task, seed: int, k: int = 32, permutations: int = 3
         "claim": bool(row.get("detected_affirmed")),
         "scores": [float(x) for x in scores],
         "detail": {"tier": row.get("tier"), "power_verdict": row.get("power_verdict"),
+                   "power_se_conf": row.get("power_se_conf"), "se_confirmation": row.get("se_confirmation"),
+                   "power_mde_plain": row.get("power_mde_plain"),
                    "delta": row.get("delta"), "p_selection": row.get("p_selection")},
     }
 
@@ -432,7 +436,7 @@ AGENTS: dict[str, Callable[[Task, int], dict[str, Any]]] = {
     "holdout_search": agent_holdout,
     "iterating_agent": agent_iterating,
     "autoresearch": agent_autoresearch,
-    "autoresearch_gate_only": agent_autoresearch_gate_only,
+    "autoresearch_proceed": agent_autoresearch_proceed,
 }
 
 
@@ -604,7 +608,7 @@ def to_markdown(payload: dict[str, Any]) -> str:
         "This is the default behaviour of an automated analyst that doesn't price its search.",
         "- **holdout_search**: the same search on 70% of the discovery data; the single winner is tested on the other 30%.",
         "- **iterating_agent**: like holdout_search, but when the check fails it tries the next-best rule against the same holdout, up to 10 times. This is how a tool-using agent behaves.",
-        "- **autoresearch_gate_only** (diagnostic): the same engine with the power oracle's up-front refusal skipped, to separate the oracle's cost from the gate's.",
+        "- **autoresearch_proceed**: the same engine with the contract option `if_underpowered: proceed`: underpowered questions are run and labelled, not refused.",
         "- **autoresearch**: this engine. It prices the search, seals 40% of the discovery data, confirms one rule, runs the red team and the gate.",
         "",
         "## Rules",

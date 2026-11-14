@@ -115,6 +115,8 @@ def build_certificate(
             "alpha": contract.decision.alpha,
             "target_power": contract.decision.target_power,
             "chosen_by": contract.decision.alpha_chosen_by,
+            "if_underpowered": contract.decision.if_underpowered,
+            "if_underpowered_chosen_by": contract.decision.if_underpowered_chosen_by,
         },
         "run_id": run_id,
         "seed": int(seed),
