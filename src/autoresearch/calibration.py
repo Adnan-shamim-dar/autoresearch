@@ -177,6 +177,12 @@ def _bank(
     return fm, valid, np.column_stack(scores)
 
 
+def _groups(df: pd.DataFrame, contract: Contract) -> np.ndarray:
+    if contract.group_column and contract.group_column in df.columns:
+        return df[contract.group_column].astype(str).to_numpy()
+    return np.array(["__all__"] * len(df))
+
+
 def _confirmation(
     contract: Contract,
     confirmation: pd.DataFrame,
@@ -193,7 +199,7 @@ def _confirmation(
     s_cand = fm.score_candidate(candidate)
     s_base = fm.score_candidate(contract.baseline_candidate())
     y = confirmation[contract.outcome_column].to_numpy().astype(int)
-    groups = confirmation[contract.group_column].astype(str).to_numpy()
+    groups = _groups(confirmation, contract)
     m = metrics.compute_metrics(y, groups, s_cand, s_base, top_k=contract.top_k)
     boot = metrics.group_bootstrap_deltas(y, groups, s_cand, s_base, n_boot=bootstrap, seed=seed)
     summ = metrics.bootstrap_summary(boot)
@@ -240,11 +246,9 @@ def _wilson(k: int, n: int, z: float = 1.959963984540054) -> tuple[float, float]
 def run_one(payload: dict[str, Any]) -> dict[str, Any]:
     seed = int(payload["seed"])
     target_effect = float(payload["target_effect"])
-    n_candidates = int(payload["candidates"])
-    n_permutations = int(payload["permutations"])
     n_patients = int(payload.get("patients", 420))
     n_confirmation_groups = int(payload.get("confirmation_groups", 140))
-    n_splits = int(payload.get("splits", 5))
+    n_candidates = int(payload["candidates"])
 
     features = generate_immunotherapy_data(seed=seed, n_patients=n_patients)
     full = _plant_outcomes(features, target_effect=target_effect, seed=seed + 17)
@@ -260,7 +264,41 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
         confirmation_n=len(confirmation),
         confirmation_groups=int(confirmation["patient_id"].nunique()),
     )
-    contract = Contract(raw)
+    true_effect = float(
+        metrics.auc(full["immunogenic"].to_numpy(), _truth_score(full))
+        - metrics.auc(full["immunogenic"].to_numpy(), full["baseline_score"])
+    )
+    return evaluate_replicate(
+        payload,
+        raw,
+        discovery,
+        confirmation,
+        discovery["baseline_score"].to_numpy(),
+        true_effect,
+    )
+
+
+def evaluate_replicate(
+    payload: dict[str, Any],
+    raw_contract: dict[str, Any],
+    discovery: pd.DataFrame,
+    confirmation: pd.DataFrame,
+    baseline_discovery: np.ndarray | None,
+    true_effect: float,
+) -> dict[str, Any]:
+    """One OC-table replicate on prepared data: the engine's pipeline end to end.
+
+    Domain-independent: the substrate (synthetic or real-with-planted-outcome)
+    is built by the caller. ``baseline_discovery`` defaults to the contract's
+    baseline candidate scored on discovery, as in the engine.
+    """
+    seed = int(payload["seed"])
+    target_effect = float(payload["target_effect"])
+    n_candidates = int(payload["candidates"])
+    n_permutations = int(payload["permutations"])
+    n_splits = int(payload.get("splits", 5))
+
+    contract = Contract(raw_contract)
     contract.validate_static()
     try:
         contract.attach_data(discovery, role="discovery")
@@ -269,7 +307,8 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
 
     budget = compute_budget(contract, discovery)
     fm, candidates, score_matrix = _bank(contract, discovery, n_candidates, seed)
-    ids = [c.id for c in candidates]
+    if baseline_discovery is None:
+        baseline_discovery = fm.score_candidate(contract.baseline_candidate())
     comp = {c.id: c.complexity for c in candidates}
 
     ev = evaluate_candidates(
@@ -277,7 +316,7 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
         contract,
         candidates,
         fm,
-        discovery["baseline_score"].to_numpy(),
+        baseline_discovery,
         budget,
         n_splits=n_splits,
         seed=seed,
@@ -296,12 +335,12 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
     observed = _confirmation(contract, confirmation, selected, seed=seed + 101, bootstrap=700)
 
     y = discovery[contract.outcome_column].to_numpy().astype(int)
-    groups = discovery[contract.group_column].astype(str).to_numpy()
+    groups = _groups(discovery, contract)
     folds = assign_folds(groups, y, n_splits=n_splits, seed=seed)
     # Same selection-aware null as the engine: discovery data only.
     null_summary = selection_aware_null(
         score_matrix_eff,
-        discovery["baseline_score"].to_numpy(),
+        baseline_discovery,
         y,
         groups,
         folds,
@@ -316,7 +355,7 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
         contract,
         discovery,
         confirmation_n=len(confirmation),
-        confirmation_groups=int(confirmation["patient_id"].nunique()),
+        confirmation_groups=int(len(set(_groups(confirmation, contract)))) if contract.group_column else len(confirmation),
         confirmation_prevalence=float(confirmation[contract.outcome_column].mean()),
         k_candidates=len(candidates),
         alpha=0.05,
@@ -334,13 +373,10 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "seed": seed,
         "target_effect": target_effect,
-        "true_effect": float(
-            metrics.auc(full["immunogenic"].to_numpy(), _truth_score(full))
-            - metrics.auc(full["immunogenic"].to_numpy(), full["baseline_score"])
-        ),
+        "true_effect": float(true_effect),
         "n_discovery": int(len(discovery)),
         "n_confirmation": int(len(confirmation)),
-        "n_groups_confirmation": int(confirmation["patient_id"].nunique()),
+        "n_groups_confirmation": int(len(set(_groups(confirmation, contract)))),
         "baseline_auc_confirmation": float(observed["auc_baseline"]),
         "power_verdict": power.verdict,
         "power_mde_search": float(power.mde_search),
@@ -399,14 +435,17 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
         selected,
         y,
         groups,
-        discovery["baseline_score"].to_numpy(),
+        baseline_discovery,
         float(selected_result["mean_delta"]),
         budget,
         alpha=0.05,
         seed=seed,
         validation=contract.validation.to_dict() if contract.validation else None,
         discovery_groups=sorted(map(str, set(groups))),
-        confirmation_group_hash=sha256_obj(sorted(map(str, confirmation["patient_id"].unique()))),
+        # As in the engine: the vault records no group hash for a no-group dataset.
+        confirmation_group_hash=(
+            sha256_obj(sorted(map(str, set(_groups(confirmation, contract))))) if contract.group_column else None
+        ),
         code_files=CODE_FILES,
     )
     decision = decide(attacks)

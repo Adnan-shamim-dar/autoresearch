@@ -12,14 +12,14 @@ Status of this build against `Auto.md` (build specification v1), section by sect
 | 4 | Complexity budget | Built |
 | 5 | Proposer + feedback-leak test | Built |
 | 6 | Evaluator, acceptance tests with broken guards | Built (reusable holdout owed) |
-| 7 | Gate + published OC table | Built on synthetic data; real-data table owed |
+| 7 | Gate + published OC table | Built; synthetic and real-data (plasmode) tables |
 | 8 | Registry, procedure registration, alpha ledger | Built |
 | 9 | Adversary + its own false-alarm rate | Built |
 | 10 | Certificate | Built |
 | 11 | Interfaces | Partial: no public registry or DOIs |
 | 12 | Non-obvious constraints | Mostly built; see below |
-| 13 | Milestones | 1–8 and 10 met; 9 owed |
-| 14 | The five proofs | Not met; none can be produced by the author |
+| 13 | Milestones | 1–10 met |
+| 14 | The five proofs | 1 and 4 met; 5 has a one-command kit and awaits a third party; 2 and 3 owed |
 
 ## Section by section
 
@@ -79,7 +79,18 @@ Status of this build against `Auto.md` (build specification v1), section by sect
   | 0.15 | 1.00 | 0.85 |
 
   False-positive rate: 0 of 20 nulls.
-- **Owed:** the spec says planted effects in **real** data. This table is synthetic, and §14 says synthetic-only calibration is not believed.
+- **Real-data table** (`calibration/oc_table_real.md`, `autoresearch calibrate --real`): plasmode design on the 569 real WDBC tumours. Real measurements, correlations and sample size; only the outcome is re-drawn, so the true effect is known. 100 replicates per effect:
+
+  | True effect | Promoted | 95% CI |
+  |---:|---:|---:|
+  | 0.00 | 0.00 | 0.00–0.04 |
+  | 0.03 | 0.00 | 0.00–0.04 |
+  | 0.06 | 0.00 | 0.00–0.04 |
+  | 0.10 | 0.00 | 0.00–0.04 |
+  | 0.15 | 0.44 | 0.35–0.54 |
+
+  No false positives, and a gate that's much more conservative on real data of this size than on the synthetic substrate. The binding check is the selection-aware null: at a true 0.10 the sealed set confirms the effect (one-sided p ≤ 0.05) in 96 of 100 replicates, but the search-priced p clears α in only 6, because pricing a 32-candidate search on 341 discovery tumours is expensive. The adversary killed 0 of 44 honest promotions. The calibration contract asks a 0.10 question, because the power oracle refuses 0.04 at this n (MDE after search about 0.08–0.10).
+- **Gap:** one real dataset, with no group structure. The group-aware machinery is calibrated only on synthetic data.
 
 ### §8 Registry
 - Contracts are registered at creation; the denominator is exposed.
@@ -119,17 +130,15 @@ Status of this build against `Auto.md` (build specification v1), section by sect
 ### §13 Milestones
 - **1–7:** met.
 - **8 (second domain, signs pre-committed):** met. `autoresearch init --domain wdbc` runs on **real data** (Wisconsin Diagnostic Breast Cancer, bundled with scikit-learn): no groups, tumour size as the deployed baseline, ten feature signs committed in advance. The 0.02-AUC question is refused before any search (it needs about 3,000 sealed tumours; there are 228). Direction aggregation runs instead: **9 of 10 signs held (p = 0.011)**. Building it exposed and fixed real generality bugs: the gate could not say yes without groups, and plaintext sealed rows were left readable.
-- **9 (replication back-test):** owed. It needs replication-project data, whose access terms and granularity the spec itself says to check first.
+- **9 (replication back-test):** met, on summary statistics (see §14.4).
 - **10 (agent tool + registry):** met.
 
 ### §14 The five proofs
-None can be produced by the author alone:
-
-1. **Real-data OC table.** Needs a decision on which open labelled dataset to plant into (CEDAR/IEDB are open access) and a download.
-2. **A correct yes agreed with by later data.** Needs a later dataset.
-3. **A correct no where a conventional analysis would have looked publishable.** Candidate: the WDBC 0.02 question.
-4. **Replication back-test.**
-5. **Third-party reproduction.**
+1. **Real-data OC table: met** (§7), on one real dataset without groups.
+2. **A correct yes agreed with by later data: owed.** Needs a later dataset.
+3. **A correct no where a conventional analysis would have looked publishable: owed.** Candidate: the WDBC 0.02 question.
+4. **Replication back-test: met.** Pre-registered in `docs/backtest/PREREGISTRATION.md` (commit 0a91747), committed before outcomes were joined; results in `docs/backtest/RESULTS.md`. Run blind on 92 published findings from the Reproducibility Project: Psychology, the search-priced rule (K = 10) accepted 47 and refused 45. Its accepts replicated at 49% (95% CI 35–63%) and its refusals at 24% (14–39%); Fisher p = 0.018. The stricter MDE rule: 65% vs 28%, p = 0.002. At K = 5 the difference isn't significant (40% vs 31%, p = 0.51), so the result depends on the implicit search size. It applies the gate's pricing to summary statistics, not the full engine, and the link between small original p-values and replication was already known.
+5. **Third-party reproduction: kit ready, not yet done.** `python scripts/reproduce_proofs.py` recomputes the back-test, the WDBC result and the test suite from public data and writes a report (`docs/REPRODUCE.md`). It passes from a clean directory on the author's machine. Someone else has to run it.
 
 ## Architecture note
 §0 asks that modules communicate only through files on disk with declared schemas. They currently call each other in-process. The run's artifacts are files with `schema` fields, and the label service crosses a real process boundary, but the remaining modules are not separated. That would be a refactor, not a fix.

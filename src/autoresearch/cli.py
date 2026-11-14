@@ -619,7 +619,19 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     from .calibration import publish_oc_table, run_calibration
 
     root = _root(args)
-    if args.publish_only:
+    name = "oc_table_real" if args.real else "oc_table"
+    if args.real:
+        from .calibration_real import run_real_calibration
+
+        result = run_real_calibration(
+            root,
+            reps=args.reps,
+            effects=tuple(args.effects),
+            candidates=args.candidates,
+            permutations=args.permutations,
+            workers=args.workers,
+        )
+    elif args.publish_only:
         result = publish_oc_table(root)
     else:
         result = run_calibration(
@@ -633,8 +645,8 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     if args.json:
         _print_json(result)
     else:
-        print(f"Calibration written to {root / 'calibration' / 'oc_table.json'}")
-        print(f"Human-readable table: {root / 'calibration' / 'oc_table.md'}")
+        print(f"Calibration written to {root / 'calibration' / (name + '.json')}")
+        print(f"Human-readable table: {root / 'calibration' / (name + '.md')}")
         print(f"{'effect':>8} {'n':>4} {'true effect':>12} {'promoted':>9} {'confirmed':>10} {'fpr':>7}")
         for row in result["rows"]:
             print(
@@ -891,6 +903,7 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--permutations", type=int, default=39)
     cal.add_argument("--workers", type=int, default=0)
     cal.add_argument("--publish-only", action="store_true", help="Re-summarize an existing table; do not re-run")
+    cal.add_argument("--real", action="store_true", help="Real-data (WDBC plasmode) table instead of the synthetic one")
     cal.add_argument("--json", action="store_true")
     cal.set_defaults(func=cmd_calibrate)
 

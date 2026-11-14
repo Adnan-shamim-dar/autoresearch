@@ -54,12 +54,17 @@ Without installing, run commands as `python -m autoresearch ...` with `PYTHONPAT
 | `publish --run R --by NAME` | Make a certificate public (an attributed ledger event) |
 | `refusals` | Refusal taxonomy across every run |
 | `ledger` | Verify the vault and registry hash chains |
-| `calibrate [--publish-only]`, `leak-test` | Rebuild the OC table; run the feedback-leak test |
+| `calibrate [--real] [--publish-only]`, `leak-test` | Rebuild the synthetic or real-data OC table; run the feedback-leak test |
+| `backtest --data RPPdataConverted.xlsx` | Pre-registered replication back-test |
 | `serve`, `mcp` | Web console; MCP stdio server (`autoresearch_verify`, `_check_certificate`, `_power`, `_validate`, `_catalog`, `_run`) |
 
 ## Published numbers
 
-**Gate operating characteristics** ([calibration/oc_table.md](calibration/oc_table.md)). Synthetic planted-signal fixture, 20 replicates per effect, full adversary in every replicate.
+**Replication back-test, pre-registered** ([docs/backtest/RESULTS.md](docs/backtest/RESULTS.md)). Run blind on 92 published psychology findings with known replication outcomes (Reproducibility Project: Psychology), the gate's search-priced rule accepted 47 and refused 45. **Its accepts replicated at 49%, its refusals at 24%** (Fisher p = 0.018). The rule was committed to git before any outcome was joined.
+
+**Gate operating characteristics on real data** ([calibration/oc_table_real.md](calibration/oc_table_real.md)). 569 real WDBC tumours with planted outcomes of known size, 100 replicates per effect: **0 false positives in 100 nulls** (95% CI 0–4%). Detection is 0% up to a true AUC gain of 0.10 and 44% at 0.15. On data this small the gate is conservative, and the search price is what binds.
+
+**Gate operating characteristics, synthetic** ([calibration/oc_table.md](calibration/oc_table.md)). Synthetic planted-signal fixture, 20 replicates per effect, full adversary in every replicate.
 
 | True effect | Promoted | Confirmed only | False positives |
 |---:|---:|---:|---:|
@@ -90,9 +95,14 @@ The adversary killed **0 of 39** honest promotions (95% CI 0–9%). The gate is 
 | `registry.py` | Contracts, procedures, predictions, alpha, publication, operator log, taxonomy |
 | `certificate.py` | Signing, verification, Markdown face |
 | `engine.py`, `api.py` | Orchestration; `verify(contract, data, candidate)` |
-| `calibration.py`, `feedback_leak.py` | OC harness; spec §5 leak test |
+| `calibration.py`, `calibration_real.py`, `feedback_leak.py` | OC harness (synthetic and real-data plasmode); spec §5 leak test |
+| `backtest.py` | Pre-registered replication back-test |
 | `demo.py`, `wdbc.py` | The two domains |
 | `cli.py`, `server.py`, `mcp_server.py`, `web/` | Interfaces |
+
+## Reproduce
+
+`python scripts/reproduce_proofs.py` recomputes the back-test, the WDBC result and the fast test suite from public data in about five minutes. It writes `reproduction_report.json`. See [docs/REPRODUCE.md](docs/REPRODUCE.md).
 
 ## Tests
 
@@ -105,7 +115,7 @@ The spec's acceptance tests are each shown failing when their guard is broken: a
 
 ## Limitations
 
-- **Calibration is synthetic only.** The OC table is calibrated on synthetic data, and §14 of the spec says that's not believed. A real-data table, a replication back-test and third-party reproduction are still owed.
+- **Evidence is narrow.** The real-data OC table uses one dataset without groups. The back-test applies the gate's pricing to summary statistics, not the full engine, and depends on an implicit search size (K = 10; not significant at K = 5). No third party has reproduced the results yet. [docs/REPRODUCE.md](docs/REPRODUCE.md) gives the one command for that.
 - **Same-account OS lock.** The lock stops accidental reads from the search process, not a deliberate unlock by the same OS account. Full separation means running the label service under its own account.
 - **Symmetric signing key.** Certificates use an HMAC key in `state/`, so a key holder can both verify and sign. Public verifiability would need asymmetric signatures.
 - **Shared code, not file-based modules.** The selection null holds the candidate pool fixed rather than re-running the adaptive proposer per permutation (a §12.1 surrogate). Modules call each other in-process rather than communicating only through files.
