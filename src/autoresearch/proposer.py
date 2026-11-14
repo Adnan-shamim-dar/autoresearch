@@ -27,6 +27,36 @@ FEATURE_SYNONYMS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# The feedback channel (spec §5)
+# ---------------------------------------------------------------------------
+# Feedback to any proposer is {kept | rejected, reason_code} and nothing else:
+# never a score, p-value or margin. A proposer given numbers optimises against
+# the gate, which is p-hacking performed by a machine at scale. Every feedback
+# message the engine sends passes through sanitize_feedback; the leak test in
+# feedback_leak.py measures what happens when it does not.
+
+FEEDBACK_STATUSES = frozenset({"kept", "rejected"})
+_REASON_CODE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz_")
+
+
+def sanitize_feedback(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reduce feedback to ``{id, status, reason_code}``.
+
+    Any other field is dropped. A reason code that is not a plain lowercase
+    identifier is replaced, because free text or digits can smuggle a number.
+    """
+    out: list[dict[str, Any]] = []
+    for item in items:
+        status = item.get("status")
+        status = status if status in FEEDBACK_STATUSES else "rejected"
+        code = str(item.get("reason_code") or status)
+        if not code or not set(code) <= _REASON_CODE_CHARS:
+            code = f"{status}_unspecified"
+        out.append({"id": str(item.get("id", "")), "status": status, "reason_code": code})
+    return out
+
+
 def _match_feature(contract: Contract, keywords: list[str]) -> str | None:
     for f in contract.features:
         text = (f.name + " " + f.description).lower()

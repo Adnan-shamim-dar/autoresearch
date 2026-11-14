@@ -26,7 +26,7 @@ from .evaluator import (
 )
 from .gate import GateDecision, assign_tier
 from .power import Assessment, assess
-from .proposer import OpenAICompatibleLLM, Proposer
+from .proposer import Proposer, sanitize_feedback
 from .registry import Registry, RegistryError
 from .scoring import Candidate, FeatureMatrix
 from .utils import (
@@ -440,10 +440,9 @@ class Engine:
                     reason_code=fb.get("reason_code"),
                     feedback_status=fb.get("status"),
                 )
-            feedback = [
-                {"id": cid, "status": r.get("feedback", {}).get("status"), "reason_code": r.get("feedback", {}).get("reason_code")}
-                for cid, r in ev.results.items()
-            ]
+            feedback = sanitize_feedback(
+                [{"id": cid, **r.get("feedback", {})} for cid, r in ev.results.items()]
+            )
             kept = [all_candidates[cid] for cid, r in ev.results.items() if r.get("feedback", {}).get("status") == "kept"]
             if ev.selected_candidate:
                 discovery_selected = ev.selected_candidate

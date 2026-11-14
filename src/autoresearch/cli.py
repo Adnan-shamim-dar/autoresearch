@@ -639,6 +639,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_leak_test(args: argparse.Namespace) -> int:
+    from .feedback_leak import publish, run_experiment
+
+    root = _root(args)
+    print(f"Feedback-leak test: {args.replicates} pure-null replicates per channel ...")
+    result = run_experiment(replicates=args.replicates)
+    path = publish(root, result)
+    for ch in ("leaky", "guarded"):
+        a = result["summary"][ch]
+        print(f"  {ch:<8} FPR {a['fpr']:.2f} ({a['false_positives']}/{a['n']}, 95% CI {a['fpr_ci_low']:.2f}-{a['fpr_ci_high']:.2f})")
+    print(f"Published: {path}")
+    return 0
+
+
 def cmd_label_service(args: argparse.Namespace) -> int:
     from .vault import label_service_main
 
@@ -798,6 +812,10 @@ def build_parser() -> argparse.ArgumentParser:
     # Also accept --root after the subcommand (MCP client configs commonly do).
     mcp.add_argument("--root", dest="root", default=argparse.SUPPRESS, help="Project root")
     mcp.set_defaults(func=cmd_mcp)
+
+    leak = sub.add_parser("leak-test", help="Run the spec §5 feedback-leak test and publish the result")
+    leak.add_argument("--replicates", type=int, default=100)
+    leak.set_defaults(func=cmd_leak_test)
 
     ls = sub.add_parser(
         "label-service",
