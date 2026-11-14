@@ -1,20 +1,26 @@
 # AutoResearch
 
-A discovery engine that **prices the search before it runs**, and then either issues a signed **claim certificate** or a first-class **refusal with a design prescription**.
+A discovery engine that **prices the search before it runs**, and then issues either a signed **claim certificate** or a first-class **refusal with a design prescription**.
 
-The engine is domain-general. The bundled application domain is personalised immunotherapy (neoantigen immunogenicity ranking), demonstrated on a **synthetic** TESLA/CEDAR-shaped substrate. Nothing in this repository is clinical evidence.
+The engine is domain-general and ships with two domains:
+
+- **Immunotherapy** (neoantigen immunogenicity ranking) on a **synthetic** TESLA/CEDAR-shaped substrate.
+- **WDBC**: real breast-cancer data with no groups and pre-committed signs.
+
+Nothing here is clinical evidence. Section-by-section status against the build specification is in [docs/SPEC_COVERAGE.md](docs/SPEC_COVERAGE.md).
 
 ## What it does
 
-1. **Contract.** You state the question up front: the unit, the group, the outcome, the baseline, the smallest effect that matters and the decision it would change. The contract is validated against the data and hashed.
-2. **Power oracle.** Before any hypothesis is proposed, it computes the minimum detectable effect, both plain and after pricing *K* candidate hypotheses. If the question is underpowered, the run stops with a refusal that says how much more data, or which alternative design, would make it answerable.
-3. **Search.** A proposer (a deterministic bank, optionally extended by an OpenAI-compatible LLM) generates candidate rules under a complexity budget. Candidates are scored with group-aware cross-validation on discovery data only.
-4. **Selection-aware null.** The whole search is re-run on outcome permutations, so the p-value accounts for the fact that the best of *K* was picked.
-5. **Sealed confirmation.** The selected rule is tested once on a sealed set. Labels are reachable only through an aggregate label service with a query budget, and every access is written to a hash-chained ledger.
-6. **Gate and adversary.** A tiered gate (`confirmed` / `supported` / `exploratory` / refused) uses the published operating-characteristics table. Adversarial checks attack the result before it is issued.
-7. **Certificate.** The result is HMAC-signed and lists the search price, alpha spent, provenance hashes, adversary results, limitations and a reproduce command. Every artifact in the run directory is covered by a manifest.
+1. **Contract.** You state the question up front: unit, group, outcome, a deployed baseline (never chance), the smallest effect that matters and the decision it changes. The contract is validated against the data and hashed.
+2. **Power oracle.** Before any hypothesis exists, it computes the minimum detectable effect for one candidate and for the best of K. An unanswerable question is refused with the sample size or alternative design that would fix it, plus an α dial priced in the decision's own units.
+3. **Registration.** The engine writes and hashes its own plan (selection rule, budget, seed, null, code hash) and registers it before the search.
+4. **Search.** Operator families, plus an optional LLM proposer, generate candidates under a complexity budget. Every proposer hears only `{kept | rejected, reason_code}`, never a number.
+5. **Selection-aware null.** The whole candidate pool is re-scored on outcomes permuted within groups, using discovery data only, so the p-value prices the fact that the best of K was picked.
+6. **Sealed confirmation.** Exactly one candidate goes to the sealed set. The label service runs as a **separate process**; sealed files are encrypted and carry an **OS read lock**; only aggregates come back, and every access is written to a hash-chained ledger.
+7. **Gate and adversary.** Tiers are assigned by a function calibrated by the published operating-characteristics table. A red team (pseudo-group control, permutations at several levels, leave-one-site-out, leakage scan, baseline advocate, context heterogeneity) attacks every promotion, and its own false-alarm rate is published.
+8. **Certificate.** HMAC-signed and byte-reproducible across processes. It records the search price, alpha spent, provenance, adversary results, the interpretability bill (rule vs an unconstrained model), expiry, and who chose the operating point. Every artifact is covered by a manifest.
 
-Alpha is conserved **per dataset lifetime** in the registry ledger, not per run, and the registry exposes the denominator: every registered contract, including the ones that never produced a claim.
+Alpha is conserved **per dataset lifetime**, across runs, sessions and callers. Every contract is registered at creation, so the denominator is visible, and refusals stay private until someone publishes them.
 
 ## Quickstart
 
@@ -23,79 +29,83 @@ Requires Python 3.11+.
 ```bash
 pip install -e ".[dev]"
 
-autoresearch init          # build the synthetic substrate, seal the confirmation set
-autoresearch demo          # end-to-end run (~4 min) + economics refusal
-autoresearch certificates  # list issued certificates
+autoresearch init                     # synthetic immunotherapy substrate; seals the confirmation set
+autoresearch demo                     # end-to-end run (~4 min) + economics refusal
+autoresearch certificates             # list certificates (unpublished refusals stay private)
 autoresearch verify --run ar-<hash>-12345
-autoresearch ledger        # verify vault and registry hash chains
-autoresearch serve         # web console on http://127.0.0.1:8787
+autoresearch serve                    # console on http://127.0.0.1:8787
+
+autoresearch --root wdbc init --domain wdbc   # second domain: real data
+autoresearch --root wdbc demo --skip-economics
 ```
 
-Without installing, run commands as `python -m autoresearch ...` with `PYTHONPATH=src`.
-
-All commands take `--root <dir>` (default: the current directory) as the first argument.
+Without installing, run commands as `python -m autoresearch ...` with `PYTHONPATH=src`. Every command takes `--root <dir>` first (default: the current directory).
 
 | Command | Purpose |
 |---|---|
-| `init` | Build the synthetic substrate and seal the confirmation set |
-| `demo [--reset]` | Run the end-to-end demo; `--reset` rebuilds the substrate (the calibration table is kept) |
-| `run --contract C --discovery D ...` | Run the engine on your own contract and data |
-| `validate --contract C --data D` | Check a contract against a table |
-| `power --contract C --data D` | Price a search without running it |
-| `economics` | Emit the power-only refusal on the economics margin question |
+| `init [--domain immunotherapy\|wdbc]` | Build a substrate and seal its confirmation set |
+| `demo [--reset]` | End-to-end run; `--reset` rebuilds the substrate (the calibration table is kept) |
+| `run --contract C --discovery D --dataset H --vault-root V --key K` | Engine on your own contract and sealed dataset |
+| `verify-candidate --contract C --discovery D --candidate JSON` | `verify(contract, data, candidate) -> certificate`, priced at K = 1 |
+| `validate`, `power` | Check a contract; price a search without running it |
 | `certificates`, `certificate --run R` | List or show certificates |
-| `verify --run R` | Check the certificate hash, signature and artifact manifest. Exit codes: 0 ok, 2 certificate invalid, 3 manifest mismatch |
-| `reproduce --run R [--fresh]` | Verify, or rebuild the substrate and re-run to compare hashes |
+| `verify --run R` | Hash, signature and artifact manifest. Exit codes: 0 ok, 2 certificate invalid, 3 manifest mismatch |
+| `reproduce --run R [--fresh]` | Verify, or rebuild the substrate and re-run to compare |
+| `publish --run R --by NAME` | Make a certificate public (an attributed ledger event) |
+| `refusals` | Refusal taxonomy across every run |
 | `ledger` | Verify the vault and registry hash chains |
-| `datasets` | Show the immunotherapy dataset atlas |
-| `calibrate [--publish-only]` | Run the calibration harness, or re-publish the existing table |
-| `serve` | Web console |
-| `mcp` | MCP stdio server (tools: `autoresearch_power`, `_validate`, `_verify`, `_catalog`, `_run`) |
+| `calibrate [--publish-only]`, `leak-test` | Rebuild the OC table; run the feedback-leak test |
+| `serve`, `mcp` | Web console; MCP stdio server (`autoresearch_verify`, `_check_certificate`, `_power`, `_validate`, `_catalog`, `_run`) |
 
-## Operating characteristics
+## Published numbers
 
-Published in [calibration/oc_table.md](calibration/oc_table.md): 20 replicates per effect, 32 candidates, 39 permutations, 480 discovery patients, 160 confirmation groups, on the synthetic planted-signal fixture.
+**Gate operating characteristics** ([calibration/oc_table.md](calibration/oc_table.md)). Synthetic planted-signal fixture, 20 replicates per effect, full adversary in every replicate.
 
-| True effect | Promoted (confirmed or supported) | Confirmed only | False-positive rate |
+| True effect | Promoted | Confirmed only | False positives |
 |---:|---:|---:|---:|
-| 0.00 | 0.00 | 0.00 | 0.00 |
-| 0.03 | 0.00 | 0.00 | 0.00 |
-| 0.06 | 0.10 | 0.00 | 0.00 |
-| 0.10 | 0.85 | 0.00 | 0.00 |
-| 0.15 | 1.00 | 0.85 | 0.00 |
+| 0.00 | 0.00 | 0.00 | 0 / 20 |
+| 0.03 | 0.00 | 0.00 | |
+| 0.06 | 0.10 | 0.00 | |
+| 0.10 | 0.85 | 0.00 | |
+| 0.15 | 1.00 | 0.85 | |
 
-The gate is conservative. It never promoted a null in 20 replicates (95% CI upper bound 0.16), but it needs an effect of about 0.10 before it reliably promotes. Twenty replicates per cell is small, so treat these as demonstration numbers, not a validated instrument.
+The adversary killed **0 of 39** honest promotions (95% CI 0–9%). The gate is conservative: it needs an effect of about 0.10 before it reliably promotes.
+
+**Feedback-leak test** ([calibration/feedback_leak.md](calibration/feedback_leak.md)). Same proposer on pure-null data. When the channel leaks scores, **36 of 100** null runs are promoted; through `sanitize_feedback`, **1 of 100**.
+
+**Second domain, real data (WDBC).** The question "does a multi-feature rule beat tumour size by 0.02 AUC" is refused before any search: it needs about 3,000 sealed tumours and there are 228. Direction aggregation runs instead, and **9 of 10 pre-committed feature signs held** on the sealed set (one-sided binomial p = 0.011).
 
 ## Layout
 
 | Module | Role |
 |---|---|
 | `contract.py` | Contract schema, validation, hashing |
-| `vault.py` | Sealed storage, aggregate label service, query budget, access ledger |
-| `power.py` | MDE, search pricing, design advisor |
+| `vault.py` | Sealed storage, OS lock, out-of-process label service, access ledger |
+| `power.py` | MDE, search pricing, α dial, design advisor |
 | `budget.py` | Complexity budget |
-| `proposer.py`, `scoring.py` | Candidate generation and feature scoring |
-| `evaluator.py`, `metrics.py` | Group-aware CV, selection-aware null, paired metrics |
+| `proposer.py`, `scoring.py` | Candidate generation, `sanitize_feedback`, feature scoring |
+| `evaluator.py`, `metrics.py` | Group-aware CV, selection-aware null, interpretability bill, paired metrics |
 | `gate.py` | Tier assignment from the OC table |
-| `adversary.py` | Attacks on the result before issue |
-| `registry.py` | Contract registry, prediction commitments, alpha ledger |
-| `certificate.py` | Signing, verification, Markdown rendering |
-| `engine.py` | Orchestration |
-| `calibration.py` | OC harness |
-| `demo.py` | Synthetic substrate and demo runs |
-| `cli.py`, `server.py`, `mcp_server.py` | Interfaces |
-| `domains/immunotherapy/` | Dataset catalog, modalities, opportunities, domain brief |
+| `adversary.py` | Red team, context heterogeneity, pseudo-group control |
+| `registry.py` | Contracts, procedures, predictions, alpha, publication, operator log, taxonomy |
+| `certificate.py` | Signing, verification, Markdown face |
+| `engine.py`, `api.py` | Orchestration; `verify(contract, data, candidate)` |
+| `calibration.py`, `feedback_leak.py` | OC harness; spec §5 leak test |
+| `demo.py`, `wdbc.py` | The two domains |
+| `cli.py`, `server.py`, `mcp_server.py`, `web/` | Interfaces |
 
 ## Tests
 
 ```bash
-python -m pytest                      # full suite (~1 min)
-python -m pytest -m "not integration" # skip end-to-end engine runs
+python -m pytest                      # full suite, a few minutes
+python -m pytest -m "not integration" # skip engine runs and subprocess tests
 ```
+
+The spec's acceptance tests are each shown failing when their guard is broken: a leaky feedback channel, testing on the selection units, a context test that ignores clustering, a tampered ledger or artifact.
 
 ## Limitations
 
-- The substrate is synthetic. The same contract is meant to run on real TESLA/CEDAR tables once access is granted, but that has not been done.
-- The vault's separation between search and labels is enforced in-process (capabilities, encrypt-then-MAC, ledger). Production-grade isolation needs OS-level separation, for example a separate user or service holding the key.
-- Certificates use a symmetric HMAC key stored under `state/`. Anyone holding the key can verify and also sign. Public verifiability would need asymmetric signatures.
-- The web console's front-end script (`web/app.js`) has not been written yet. The HTML/CSS shell and JSON API exist.
+- **Calibration is synthetic only.** The OC table is calibrated on synthetic data, and §14 of the spec says that's not believed. A real-data table, a replication back-test and third-party reproduction are still owed.
+- **Same-account OS lock.** The lock stops accidental reads from the search process, not a deliberate unlock by the same OS account. Full separation means running the label service under its own account.
+- **Symmetric signing key.** Certificates use an HMAC key in `state/`, so a key holder can both verify and sign. Public verifiability would need asymmetric signatures.
+- **Shared code, not file-based modules.** The selection null holds the candidate pool fixed rather than re-running the adaptive proposer per permutation (a §12.1 surrogate). Modules call each other in-process rather than communicating only through files.

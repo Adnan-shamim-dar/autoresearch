@@ -273,3 +273,10 @@ def test_demo_substrate_leaves_no_plaintext_sealed_rows(refused):
     """Spec §2: after sealing, the confirmation rows exist only inside the vault."""
     data_files = {p.name for p in (refused / "data").iterdir()}
     assert data_files == {"immunotherapy_discovery.csv", "demo_info.json"}
+
+
+def test_rebuilding_the_substrate_removes_legacy_plaintext(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "immunotherapy_demo.csv").write_text("leaked,rows", encoding="utf-8")
+    write_demo_files(tmp_path, seed=3, reset=True, n_patients=120, n_confirmation_groups=40)
+    assert not (tmp_path / "data" / "immunotherapy_demo.csv").exists()

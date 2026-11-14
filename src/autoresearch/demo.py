@@ -297,8 +297,10 @@ def write_demo_files(
     )
 
     # Spec §2: once sealed, the plaintext confirmation rows must not remain
-    # anywhere the search process can read them.
+    # anywhere the search process can read them, including files that older
+    # builds wrote (the full cohort held every sealed row).
     conf_path.unlink()
+    (data_dir / "immunotherapy_demo.csv").unlink(missing_ok=True)
 
     # Register the contract at creation, not at success.
     contract = load_contract(contract_path, disc_path)
