@@ -267,3 +267,9 @@ def test_selected_candidate_carries_its_proposal_tier(issued):
     prov = result["certificate"]["evidence"]["proposal_provenance"]
     assert prov["tier"] == "operator"
     assert prov["recall_risk"] is False
+
+
+def test_demo_substrate_leaves_no_plaintext_sealed_rows(refused):
+    """Spec §2: after sealing, the confirmation rows exist only inside the vault."""
+    data_files = {p.name for p in (refused / "data").iterdir()}
+    assert data_files == {"immunotherapy_discovery.csv", "demo_info.json"}

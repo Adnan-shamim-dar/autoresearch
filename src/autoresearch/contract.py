@@ -151,6 +151,9 @@ class Contract:
         self.baseline_raw = dict(raw.get("baseline", {}))
         self.metric_raw = dict(raw.get("metric", {}))
         self.contexts = list(raw.get("contexts", []) or [])
+        # Milestone 8 / spec §3 direction aggregation: feature directions double
+        # as pre-committed sign predictions, tested once on the sealed set.
+        self.commit_signs = bool((raw.get("commitments") or {}).get("signs", False))
         self.constraints = dict(raw.get("constraints", {}) or {})
         self.decision_raw = dict(raw.get("decision", {}))
         self.power_raw = dict(raw.get("power", {}) or {})

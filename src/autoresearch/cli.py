@@ -53,19 +53,6 @@ def _demo_info(root: Path) -> dict[str, Any] | None:
         return None
 
 
-def _demo_paths(root: Path, info: dict[str, Any] | None = None) -> dict[str, Path]:
-    info = info or {}
-    return {
-        "contract": root / "examples" / "immunotherapy" / "contract.yaml",
-        "discovery": root / "data" / "immunotherapy_discovery.csv",
-        "confirmation": root / "data" / "immunotherapy_confirmation.csv",
-        "key": root / "vault" / "keys" / "demo-confirmation.key",
-        "vault": root / "vault",
-        "state": root / "state",
-        "runs": root / "runs",
-    }
-
-
 def _latest_demo_run(root: Path) -> Path | None:
     info = _demo_info(root)
     if not info:
@@ -100,6 +87,20 @@ def cmd_init(args: argparse.Namespace) -> int:
     from .demo import write_demo_files
 
     root = _root(args)
+    if args.domain == "wdbc":
+        from . import wdbc
+        from .utils import atomic_write_json
+
+        for sub in ("vault", "state", "runs"):
+            if (root / sub).exists():
+                shutil.rmtree(root / sub)
+        info = wdbc.write_files(root, seed=args.seed)
+        atomic_write_json(root / "data" / "demo_info.json", info)
+        print(f"WDBC (real data) under {root}: {info['n_discovery']} discovery / {info['n_confirmation']} sealed tumours")
+        print(f"  contract hash  : {info['contract_hash']}")
+        print()
+        print("Next: autoresearch demo")
+        return 0
     print(f"Building the synthetic immunotherapy substrate under {root} ...")
     info = write_demo_files(
         root,
@@ -762,6 +763,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = sub.add_parser("init", help="Build the synthetic immunotherapy demo substrate")
     init.add_argument("--seed", type=int, default=20261114)
+    init.add_argument(
+        "--domain",
+        choices=["immunotherapy", "wdbc"],
+        default="immunotherapy",
+        help="immunotherapy: synthetic TESLA/CEDAR-shaped demo; wdbc: real breast-cancer data, no groups, signs pre-committed",
+    )
     init.add_argument("--patients", type=int, default=480)
     init.add_argument("--confirm-groups", type=int, default=160)
     init.set_defaults(func=cmd_init)

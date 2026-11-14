@@ -88,8 +88,14 @@ def group_bootstrap_deltas(
     n_boot: int = 1000,
     seed: int = 0,
 ) -> np.ndarray:
-    """Bootstrap resampling *groups*, never units. Paired by construction."""
+    """Bootstrap resampling *groups*, never units. Paired by construction.
+
+    A contract with no group column puts every row in one group, which declares
+    no clustering: units are then independent and are what gets resampled.
+    """
     gi = group_indices(groups)
+    if len(gi) == 1:
+        gi = {str(i): np.array([i]) for i in range(len(y))}
     keys = list(gi.keys())
     if len(keys) < 2:
         return np.array([], dtype=float)
@@ -290,3 +296,24 @@ def aggregate_folds(fold_rows: list[dict[str, Any]], candidate_id: str) -> Candi
             else float("nan"),
         },
     )
+
+
+def stability_fraction(
+    y: np.ndarray,
+    groups: np.ndarray,
+    s_cand: np.ndarray,
+    s_base: np.ndarray,
+    boot_deltas: np.ndarray | None = None,
+) -> float:
+    """How consistently the candidate beats the baseline.
+
+    With groups: the fraction of groups where it does. With no declared
+    clustering (one group), per-group deltas are undefined, so the fraction of
+    bootstrap resamples with a positive delta is used instead.
+    """
+    if len(group_indices(groups)) >= 2:
+        vals = np.asarray(list(per_group_delta(y, groups, s_cand, s_base).values()), dtype=float)
+        return float(np.mean(vals > 0)) if len(vals) else float("nan")
+    if boot_deltas is None or len(boot_deltas) == 0:
+        return float("nan")
+    return float(np.mean(np.asarray(boot_deltas) > 0))

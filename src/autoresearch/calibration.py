@@ -209,7 +209,7 @@ def _confirmation(
         "ci_high": float(summ["ci_high"]),
         "se": float(summ["se"]),
         "p_one_sided": float(summ["p_one_sided"]),
-        "stability_confirmation": float(np.mean(vals > 0)) if len(vals) else float("nan"),
+        "stability_confirmation": metrics.stability_fraction(y, groups, s_cand, s_base, boot),
         "auc_candidate": float(m["auc_candidate"]),
         "auc_baseline": float(m["auc_baseline"]),
         "frac_improved": float(m["frac_improved"]),

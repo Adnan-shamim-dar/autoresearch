@@ -476,7 +476,8 @@ class SealedLabelService:
             "role": "sealed",
             "sealed": True,
             "n_rows": int(len(self._df)),
-            "n_groups": int(len(set(groups))),
+            # No group column declares no clustering: every unit is independent.
+            "n_groups": int(len(set(groups))) if self.contract.group_column else int(len(self._df)),
             "columns": [str(c) for c in self._df.columns],
             "outcome_column": self.contract.outcome_column,
             "group_column": self.contract.group_column,
@@ -539,8 +540,9 @@ class SealedLabelService:
                 "candidate_id": cand.id,
                 "purpose": purpose,
                 "n": m["n"],
-                "n_groups": m["n_groups"],
-                "n_groups_evaluable": m["n_groups_evaluable"],
+                # No group column: units are the independent groups.
+                "n_groups": m["n_groups"] if self.contract.group_column else m["n"],
+                "n_groups_evaluable": m["n_groups_evaluable"] if self.contract.group_column else m["n"],
                 "prevalence": m["prevalence"],
                 "auc_candidate": m["auc_candidate"],
                 "auc_baseline": m["auc_baseline"],
@@ -567,10 +569,10 @@ class SealedLabelService:
                         "n_boot": summ["n_boot"],
                     }
                 )
-                per_group = metrics.per_group_delta(y, groups, s_cand, s_base)
+                per_group = metrics.per_group_delta(y, groups, s_cand, s_base) if len(set(groups)) > 1 else {}
                 result["per_group_deltas"] = per_group
                 vals = np.array(list(per_group.values()))
-                result["stability_confirmation"] = float(np.mean(vals > 0)) if len(vals) else float("nan")
+                result["stability_confirmation"] = metrics.stability_fraction(y, groups, s_cand, s_base, boot)
                 result["leave_one_group_out"] = {
                     "min_delta": float(vals.min()) if len(vals) else None,
                     "max_delta": float(vals.max()) if len(vals) else None,
@@ -594,6 +596,39 @@ class SealedLabelService:
             result["access_entry_hash"] = self.vault.ledger_head()
             self._calls.append(entry)
             return json_safe(result)
+
+    def confirm_signs(self, directions: dict[str, str], purpose: str = "pre-committed signs", cost: int = 1) -> dict[str, Any]:
+        """K pre-committed directional predictions -> one binomial test.
+
+        Returns only the count of features whose sealed-set association has the
+        predicted sign; never which ones, so the query leaks one aggregate.
+        """
+        from scipy import stats as _stats
+
+        with self._lock:
+            if self._budget_remaining < cost:
+                self.vault._append_ledger({"type": "confirm_denied", "dataset": self.dataset_hash, "actor": "label_service", "purpose": purpose})
+                raise BudgetExhausted(f"Unsealing budget exhausted: {self._budget_remaining} remaining, {cost} requested")
+            y = self._df[self.contract.outcome_column].to_numpy().astype(int)
+            agree = evaluable = 0
+            for name, direction in sorted(directions.items()):
+                if name not in self._df.columns:
+                    continue
+                x = pd.to_numeric(self._df[name], errors="coerce").astype(float)
+                x = x.fillna(x.median()).to_numpy()
+                a = metrics.auc(y, x)
+                if not np.isfinite(a) or a == 0.5:
+                    continue
+                evaluable += 1
+                agree += int(("higher_better" if a > 0.5 else "lower_better") == direction)
+            self._budget_remaining -= cost
+            self._persist_budget()
+            p = float(_stats.binom.sf(agree - 1, evaluable, 0.5)) if evaluable else float("nan")
+            self.vault._append_ledger(
+                {"type": "confirm_signs", "dataset": self.dataset_hash, "actor": "label_service", "purpose": purpose,
+                 "cost": int(cost), "budget_remaining": int(self._budget_remaining), "n_signs": evaluable}
+            )
+            return {"n_signs": evaluable, "agree": agree, "p_one_sided": p, "budget_remaining": int(self._budget_remaining)}
 
     def access_log(self) -> list[dict[str, Any]]:
         return list(self._calls)
@@ -647,12 +682,15 @@ class _LabelHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             self._send(401, {"error": "unauthorized"})
             return
-        if self.path != "/confirm":
+        if self.path not in ("/confirm", "/signs"):
             self._send(404, {"error": "not found"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if self.path == "/signs":
+                self._send(200, self.service.confirm_signs(payload["directions"], purpose=payload.get("purpose", "pre-committed signs")))
+                return
             result = self.service.confirm(
                 payload["candidate"],
                 purpose=payload.get("purpose", "confirmation"),
@@ -752,6 +790,9 @@ class SealedClient:
             "bootstrap": bootstrap,
         }
         return self._request("POST", "/confirm", payload)
+
+    def confirm_signs(self, directions: dict[str, str], purpose: str = "pre-committed signs") -> dict:
+        return self._request("POST", "/signs", {"directions": directions, "purpose": purpose})
 
 
 class LabelServiceProcess:

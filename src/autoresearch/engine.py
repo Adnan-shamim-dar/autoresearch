@@ -188,6 +188,7 @@ class Engine:
         meta: dict[str, Any],
         refusals_extra: list[Any] | None = None,
         limitations: list[str] | None = None,
+        evidence_extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         access_trace: list[dict[str, Any]] = []
         provenance = self._provenance(contract, meta, access_trace)
@@ -214,7 +215,7 @@ class Engine:
             interpretability_cost={"terms": None, "max_terms": None, "gap_vs_unconstrained": None},
             refusals=[{"reason_code": reason_code, "message": message}] + (refusals_extra or []),
             reproduce=f"python -m autoresearch power --contract {self.config.contract_path}",
-            evidence={"power": power.to_dict() if power else None},
+            evidence={"power": power.to_dict() if power else None, **(evidence_extra or {})},
             limitations=(limitations or []) + list(self.config.limitations),
             expires=self._expires(contract, meta),
             key=None,
@@ -257,6 +258,32 @@ class Engine:
             if p.is_file():
                 files[p.name] = sha256_file(p)
         return files
+
+    def _sign_test_only(self, contract: Contract, budget: Any, alpha_run: float, dataset_id: str) -> dict[str, Any] | None:
+        """Register, then run, the pre-committed sign test as the sole confirmatory test."""
+        cfg = self.config
+        run_id = self._run_id(contract)
+        plan = {**self._procedure_plan(contract, budget, alpha_run), "search": None, "selection_rule": None,
+                "confirmation": {"estimand": "count of pre-committed feature signs that hold", "test": "one-sided binomial vs 0.5"}}
+        entry = self.registry.register_procedure(contract.hash, run_id, plan)
+        atomic_write_json(self.run_dir / "plan.json", plan)
+        self.emit("registry", "registered", "Sign test registered before the sealed set is touched.", plan_hash=entry["plan_hash"])
+        try:
+            result = cfg.sealed.confirm_signs({f.name: f.direction for f in contract.features})
+        except BudgetExhausted as exc:
+            self.emit("confirm", "warn", f"No budget left for the sign test: {exc}")
+            return None
+        result.pop("budget_remaining", None)
+        result["procedure_hash"] = entry["plan_hash"]
+        result["alpha"] = float(alpha_run)
+        result["affirmed"] = bool(result["p_one_sided"] <= alpha_run)
+        try:
+            self.registry.spend_alpha(dataset_id, alpha_run, run_id, "pre-committed sign test")
+        except RegistryError as exc:
+            self.emit("registry", "warn", str(exc))
+        atomic_write_json(self.run_dir / "sign_test.json", result)
+        self.emit("confirm", "ok", f"Pre-committed signs: {result['agree']}/{result['n_signs']} as predicted.", **result)
+        return result
 
     def _proposal_provenance(self, contract: Contract, selected: Candidate) -> dict[str, Any]:
         """Spec §12.3: the LLM proposer may already know the answer.
@@ -355,6 +382,7 @@ class Engine:
                 "data": "discovery only",
             },
             "confirmation": {"candidates": 1, "estimand": contract.metric_raw.get("primary"), "alpha": float(alpha_run)},
+            "sign_predictions": {f.name: f.direction for f in contract.features} if contract.commit_signs else None,
             "code_sha256": sha256_obj({p.name: sha256_file(p) for p in sorted(package.glob("*.py"))}),
         }
 
@@ -479,14 +507,27 @@ class Engine:
             max_k=power.max_k_answerable,
         )
         if power.verdict == "NOT_ANSWERABLE":
+            message = power.prescription
+            extra_evidence: dict[str, Any] = {}
+            if contract.commit_signs:
+                # Design advisor, direction aggregation (spec §3): the magnitude
+                # is unrecoverable at this n, the pre-committed signs may not be.
+                sign_test = self._sign_test_only(contract, budget, alpha_run, dataset_id)
+                if sign_test:
+                    extra_evidence["sign_commitments"] = sign_test
+                    message += (
+                        f" Direction aggregation was run instead: {sign_test['agree']} of {sign_test['n_signs']} "
+                        f"pre-committed signs held on the sealed set (one-sided binomial p={sign_test['p_one_sided']:.4f})."
+                    )
             cert = self._refusal_certificate(
                 contract,
                 self._run_id(contract),
                 power,
                 "not_answerable",
-                power.prescription,
+                message,
                 meta,
                 refusals_extra=[{"reason_code": "search_not_priced", "message": "No search was run; searching would not make the question answerable."}],
+                evidence_extra=extra_evidence,
             )
             return RunResult(self._run_id(contract), self.run_dir, cert, power, self.events)
 
@@ -715,6 +756,17 @@ class Engine:
                 "n": confirmation.get("n"),
             }
         )
+        sign_test = None
+        if contract.commit_signs:
+            # Pre-committed signs (registered in the plan before the search):
+            # one aggregate query, one binomial test. Reported, not gated.
+            try:
+                sign_test = cfg.sealed.confirm_signs({f.name: f.direction for f in contract.features})
+                sign_test.pop("budget_remaining", None)
+                atomic_write_json(self.run_dir / "sign_test.json", sign_test)
+                self.emit("confirm", "ok", f"Pre-committed signs: {sign_test['agree']}/{sign_test['n_signs']} as predicted.", **sign_test)
+            except BudgetExhausted as exc:
+                self.emit("confirm", "warn", f"No budget left for the sign test: {exc}")
         # The vault ledger head carries wall-clock time; it belongs in the run
         # log, not in an artifact that must be byte-identical across processes.
         sealed_access_entry = confirmation.pop("access_entry_hash", None)
@@ -879,6 +931,7 @@ class Engine:
             reproduce=f"python -m autoresearch reproduce --run {self.run_dir.name} --seed {cfg.run_seed}",
             evidence={
                 "proposal_provenance": proposal_provenance,
+                "sign_commitments": sign_test,
                 "candidate": selected.to_dict(),
                 "baseline": contract.baseline.name,
                 "discovery_delta": float(best_result["mean_delta"]),

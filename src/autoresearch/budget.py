@@ -58,7 +58,7 @@ def compute_budget(contract: Contract, data) -> ComplexityBudget:
     mean_size = float(np.mean(sizes)) if sizes else 1.0
     # A conservative design effect: clustered observations buy less than their
     # nominal count. 0.05 is a floor, not a fitted intraclass correlation.
-    design_effect = max(1.0, 1.0 + 0.05 * max(0.0, mean_size - 1.0))
+    design_effect = max(1.0, 1.0 + 0.05 * max(0.0, mean_size - 1.0)) if contract.group_column else 1.0
     effective_n = max(4.0, effective_pairs / design_effect)
 
     max_terms = max(1, min(len(contract.features), int(math.floor(math.log2(max(8.0, effective_n))))))

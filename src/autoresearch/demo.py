@@ -243,8 +243,6 @@ def write_demo_files(
         ensure_dir(root / "calibration")
 
     df = generate_immunotherapy_data(seed=seed, n_patients=n_patients)
-    full_path = data_dir / "immunotherapy_demo.csv"
-    df.to_csv(full_path, index=False)
 
     rng = np.random.default_rng(seed + 1)
     pids = sorted(df["patient_id"].unique())
@@ -298,6 +296,10 @@ def write_demo_files(
         key_path=key_path,
     )
 
+    # Spec §2: once sealed, the plaintext confirmation rows must not remain
+    # anywhere the search process can read them.
+    conf_path.unlink()
+
     # Register the contract at creation, not at success.
     contract = load_contract(contract_path, disc_path)
     registry = Registry(root / "state")
@@ -309,8 +311,6 @@ def write_demo_files(
         "root": str(root),
         "contract_path": str(contract_path),
         "discovery_path": str(disc_path),
-        "confirmation_path": str(conf_path),
-        "full_path": str(full_path),
         "discovery_meta": disc_meta,
         "confirmation_meta": conf_meta,
         "key_path": str(key_path),
@@ -379,14 +379,16 @@ def run_demo(
         candidate_budget=candidate_budget,
         generations=generations,
         llm=llm,
-        domain_brief=(Path(__file__).parent / "domains" / "immunotherapy" / "brief.md").read_text(encoding="utf-8")
-        if (Path(__file__).parent / "domains" / "immunotherapy" / "brief.md").exists()
-        else "",
+        domain_brief=info.get("brief") or (
+            (Path(__file__).parent / "domains" / "immunotherapy" / "brief.md").read_text(encoding="utf-8")
+            if (Path(__file__).parent / "domains" / "immunotherapy" / "brief.md").exists()
+            else ""
+        ),
         calibration_table=calibration,
         key_path=root / "state" / "certificate.key",
         event_sink=event_sink,
         mode=SERVICE_MODE,
-        limitations=[
+        limitations=info.get("limitations") or [
             "Substrate is a synthetic TESLA/CEDAR-style demo, not the real TESLA or CEDAR data. The same contract runs on the real tables after access is granted.",
             "The gate's operating-characteristics table in this build is calibrated on the synthetic substrate; treat it as a demonstration, not a validated instrument.",
         ],

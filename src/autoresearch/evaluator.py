@@ -27,6 +27,13 @@ def assign_folds(
     groups = np.asarray(groups).astype(str)
     y = np.asarray(y).astype(int)
     n_groups = len(set(groups))
+    if n_groups == 1:
+        # No declared clustering: units are independent; stratify on the outcome.
+        from sklearn.model_selection import StratifiedKFold
+
+        k = int(max(2, min(n_splits, np.bincount(y).min() if len(np.unique(y)) > 1 else 2)))
+        skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=seed)
+        return [test for _, test in skf.split(np.zeros(len(y)), y)]
     n_splits = int(max(2, min(n_splits, max(2, n_groups // 2))))
     try:
         sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
