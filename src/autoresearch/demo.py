@@ -13,7 +13,7 @@ from .contract import Contract, DecisionSpec, load_contract
 from .power import assess_continuous
 from .registry import Registry
 from .utils import atomic_write_json, ensure_dir, now_iso, sha256_file, sha256_obj
-from .vault import SealedLabelService, Vault
+from .vault import SERVICE_MODE, LabelServiceProcess, Vault
 
 FEATURES = [
     {
@@ -348,11 +348,12 @@ def run_demo(
     disc_path = Path(info["discovery_path"])
     key_path = Path(info["key_path"])
     contract = load_contract(contract_path, disc_path)
-    vault = Vault(root / "vault")
-    service = SealedLabelService(
-        vault,
+    # The sealed set is reachable only through a separate label-service
+    # process; this process passes it the key location and keeps a client.
+    service_proc = LabelServiceProcess(
+        root / "vault",
         info["confirmation_meta"]["dataset_hash"],
-        contract,
+        contract_path,
         key_path,
         budget=info["confirmation_meta"].get("budget_total", 180),
     )
@@ -370,7 +371,7 @@ def run_demo(
         run_dir=run_dir,
         vault_root=root / "vault",
         registry_root=root / "state",
-        sealed=service,
+        sealed=None,
         sealed_dataset_hash=info["confirmation_meta"]["dataset_hash"],
         run_seed=12345,
         n_permutations=n_permutations,
@@ -384,14 +385,15 @@ def run_demo(
         calibration_table=calibration,
         key_path=root / "state" / "certificate.key",
         event_sink=event_sink,
-        mode="in_process_label_service",
+        mode=SERVICE_MODE,
         limitations=[
             "Substrate is a synthetic TESLA/CEDAR-style demo, not the real TESLA or CEDAR data. The same contract runs on the real tables after access is granted.",
             "The gate's operating-characteristics table in this build is calibrated on the synthetic substrate; treat it as a demonstration, not a validated instrument.",
         ],
     )
-    engine = Engine(cfg)
-    result = engine.run()
+    with service_proc as client:
+        cfg.sealed = client
+        result = Engine(cfg).run()
     atomic_write_json(root / "data" / "demo_info.json", info)
     return {
         "run_id": result.run_id,

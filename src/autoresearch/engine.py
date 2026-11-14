@@ -40,7 +40,7 @@ from .utils import (
     sha256_file,
     sha256_obj,
 )
-from .vault import BudgetExhausted, SealedLabelService
+from .vault import BudgetExhausted
 
 
 CODE_FILES = [
@@ -71,7 +71,7 @@ class RunConfig:
     calibration_table: list[dict[str, Any]] | None = None
     key_path: str | Path | None = None
     event_sink: Callable[[dict[str, Any]], None] | None = None
-    mode: str = "in_process_label_service"
+    mode: str = "separate_process_label_service"
     limitations: list[str] = field(default_factory=list)
 
 

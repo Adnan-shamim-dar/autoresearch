@@ -192,7 +192,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     from .engine import Engine, RunConfig
-    from .vault import SealedLabelService, Vault
+    from .vault import SERVICE_MODE, LabelServiceProcess, Vault
 
     root = _root(args)
     if args.demo:
@@ -222,17 +222,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             root / "runs" / f"ar-{load_contract(contract_path, discovery_path).hash[:8]}-{args.seed}"
         )
         domain_brief = ""
-        limitations = ["Generic run uses the in-process label service; physical process separation is a deployment concern."]
+        limitations = []
 
-    contract = load_contract(contract_path, discovery_path)
     vault = Vault(args.vault_root or (root / "vault"))
-    service = SealedLabelService(
-        vault,
-        dataset_hash,
-        contract,
-        key_path,
-        budget=vault.meta(dataset_hash).get("budget_total"),
-    )
     calibration = []
     cal_path = root / "calibration" / "oc_table.json"
     if cal_path.exists():
@@ -245,13 +237,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         if args.verbose:
             print(f"  [{ev.get('seq'):>3}] {ev.get('stage'):<11} {ev.get('status'):<10} {ev.get('message')}")
 
+    service_proc = LabelServiceProcess(
+        vault.root, dataset_hash, contract_path, key_path, budget=vault.meta(dataset_hash).get("budget_total")
+    )
     cfg = RunConfig(
         contract_path=contract_path,
         discovery_path=discovery_path,
         run_dir=run_dir,
         vault_root=vault.root,
         registry_root=root / "state",
-        sealed=service,
+        sealed=None,
         sealed_dataset_hash=dataset_hash,
         run_seed=args.seed,
         n_permutations=args.permutations,
@@ -262,10 +257,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         calibration_table=calibration,
         key_path=root / "state" / "certificate.key",
         event_sink=sink,
-        mode="in_process_label_service",
+        mode=SERVICE_MODE,
         limitations=limitations,
     )
-    result = Engine(cfg).run()
+    with service_proc as client:
+        cfg.sealed = client
+        result = Engine(cfg).run()
     cert = result.certificate
     print(f"run {result.run_id}: tier={cert.get('tier') or cert.get('status')} verdict={cert.get('verdict')}")
     print(cert.get("claim", ""))
@@ -642,6 +639,18 @@ def cmd_serve(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_label_service(args: argparse.Namespace) -> int:
+    from .vault import label_service_main
+
+    return label_service_main(
+        vault_root=args.vault_root,
+        dataset_hash=args.dataset,
+        contract_path=args.contract,
+        key_path=args.key,
+        budget=args.budget,
+    )
+
+
 def cmd_mcp(args: argparse.Namespace) -> int:
     from .mcp_server import main as mcp_main
 
@@ -789,6 +798,17 @@ def build_parser() -> argparse.ArgumentParser:
     # Also accept --root after the subcommand (MCP client configs commonly do).
     mcp.add_argument("--root", dest="root", default=argparse.SUPPRESS, help="Project root")
     mcp.set_defaults(func=cmd_mcp)
+
+    ls = sub.add_parser(
+        "label-service",
+        help="Run the sealed label service as its own process (started by the engine; not for direct use)",
+    )
+    ls.add_argument("--vault-root", required=True)
+    ls.add_argument("--dataset", required=True)
+    ls.add_argument("--contract", required=True)
+    ls.add_argument("--key", required=True)
+    ls.add_argument("--budget", type=int, default=None)
+    ls.set_defaults(func=cmd_label_service)
     return p
 
 

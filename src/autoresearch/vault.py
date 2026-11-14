@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-import base64
+import contextlib
 import hashlib
 import hmac
 import json
 import os
 import secrets
+import subprocess
+import sys
 import threading
-from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+from urllib import error as urlerror
 from urllib import request as urlrequest
 
 import numpy as np
@@ -22,7 +24,6 @@ from .scoring import Candidate, FeatureMatrix
 from .utils import (
     atomic_write_json,
     atomic_write_bytes,
-    canonical_json,
     chain_hash,
     ensure_dir,
     json_safe,
@@ -31,7 +32,6 @@ from .utils import (
     read_jsonl,
     sha256_bytes,
     sha256_obj,
-    sha256_text,
 )
 
 MAGIC = b"ARSEAL1"
@@ -47,6 +47,71 @@ class PermissionDenied(PermissionError):
 
 class BudgetExhausted(VaultError):
     pass
+
+
+# ---------------------------------------------------------------------------
+# OS-enforced sealing (spec §2: "sealing must be physical, not conventional")
+# ---------------------------------------------------------------------------
+# A sealed blob and its key carry an OS deny-read lock, so an accidental read
+# from the search process (pd.read_parquet, open, a debugger) fails with a real
+# PermissionError raised by the operating system, not by this library. Only the
+# label service lifts the lock, reads, and restores it. Against a deliberate
+# act by the same OS account this is a speed bump, not a wall: production
+# deployments run the label service under its own account that owns the key.
+
+_OS_USER: str | None = None
+
+
+def _os_user() -> str:
+    global _OS_USER
+    if _OS_USER is None:
+        try:
+            _OS_USER = subprocess.run(["whoami"], capture_output=True, text=True, check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            _OS_USER = os.environ.get("USERNAME", "")
+    return _OS_USER
+
+
+def os_seal(path: str | Path) -> None:
+    """Deny read access to ``path`` for the current OS account."""
+    p = str(path)
+    if os.name == "nt":
+        subprocess.run(["icacls", p, "/deny", f"{_os_user()}:(RD)"], capture_output=True, check=True)
+    else:
+        os.chmod(p, 0)
+
+
+def os_unseal(path: str | Path) -> None:
+    p = str(path)
+    if os.name == "nt":
+        subprocess.run(["icacls", p, "/remove:d", _os_user()], capture_output=True, check=True)
+    else:
+        os.chmod(p, 0o600)
+
+
+def is_os_sealed(path: str | Path) -> bool:
+    """True when the OS refuses this process a read of ``path``."""
+    try:
+        with open(path, "rb") as fh:
+            fh.read(1)
+        return False
+    except PermissionError:
+        return True
+
+
+@contextlib.contextmanager
+def os_unsealed(*paths: str | Path) -> Iterator[None]:
+    """Lift the OS lock for the duration of a read, then restore it."""
+    lifted: list[str | Path] = []
+    try:
+        for p in paths:
+            if Path(p).exists():
+                os_unseal(p)
+                lifted.append(p)
+        yield
+    finally:
+        for p in lifted:
+            os_seal(p)
 
 
 # ---------------------------------------------------------------------------
@@ -153,11 +218,13 @@ class Vault:
         path = self.keys_dir / f"{dataset_hash}.key"
         if not path.exists():
             atomic_write_bytes(path, secrets.token_bytes(32))
+            os_seal(path)
         return path
 
     @staticmethod
     def load_key(path: str | Path) -> bytes:
-        return Path(path).read_bytes()
+        with os_unsealed(path):
+            return Path(path).read_bytes()
 
     def ingest_dataframe(
         self,
@@ -194,6 +261,7 @@ class Vault:
         if sealed:
             key = self.load_key(key_path)
             atomic_write_bytes(ddir / "sealed.enc", encrypt_bytes(parquet, key))
+            os_seal(ddir / "sealed.enc")
             data_file = "sealed.enc"
         else:
             atomic_write_bytes(ddir / "data.parquet", parquet)
@@ -222,6 +290,7 @@ class Vault:
             "created_at": now_iso(),
             "sealed": bool(sealed),
             "encryption": "HMAC-SHA256 stream + HMAC-SHA256 tag" if sealed else "none",
+            "os_sealed": bool(sealed),
             "data_file": data_file,
             "twin_file": "twin.parquet" if twin else None,
             "n_rows": int(len(df)),
@@ -340,7 +409,9 @@ class Vault:
             self._append_ledger({"type": "unseal_denied", "dataset": dataset_hash, "actor": actor})
             raise PermissionDenied("Only the label service may decrypt sealed data")
         key = self.load_key(key_path)
-        blob = (self.root / dataset_hash / "sealed.enc").read_bytes()
+        blob_path = self.root / dataset_hash / "sealed.enc"
+        with os_unsealed(blob_path):
+            blob = blob_path.read_bytes()
         parquet = decrypt_bytes(blob, key)
         self._append_ledger({"type": "unseal", "dataset": dataset_hash, "actor": actor})
         import io
@@ -528,8 +599,15 @@ class SealedLabelService:
 
 
 # ---------------------------------------------------------------------------
-# HTTP label service (the process boundary used by the CLI/server demo)
+# Label service across a process boundary (spec §2)
 # ---------------------------------------------------------------------------
+# The search process never holds the key, never opens the sealed blob, and
+# never sees a row. It sends a candidate specification over HTTP with a bearer
+# token issued by the service process and receives an aggregate back. Each call
+# decrements the budget the service persists in the vault ledger.
+
+SERVICE_MODE = "separate_process_label_service"
+
 
 class _LabelHandler(BaseHTTPRequestHandler):
     service: SealedLabelService
@@ -547,8 +625,7 @@ class _LabelHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _authorized(self) -> bool:
-        auth = self.headers.get("Authorization", "")
-        return auth == f"Bearer {self.token}"
+        return hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {self.token}")
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
@@ -558,7 +635,10 @@ class _LabelHandler(BaseHTTPRequestHandler):
             self._send(401, {"error": "unauthorized"})
             return
         if self.path == "/meta":
-            self._send(200, self.service.meta())
+            meta = self.service.meta()
+            meta["mode"] = SERVICE_MODE
+            meta["service_pid"] = os.getpid()
+            self._send(200, meta)
             return
         self._send(404, {"error": "not found"})
 
@@ -583,36 +663,51 @@ class _LabelHandler(BaseHTTPRequestHandler):
             self._send(200, result)
         except BudgetExhausted as exc:
             self._send(429, {"error": "budget_exhausted", "message": str(exc)})
-        except Exception as exc:
+        except Exception as exc:  # reported to the client, never swallowed
             self._send(400, {"error": type(exc).__name__, "message": str(exc)})
 
 
-def serve_label_service(
+def label_service_main(
     vault_root: str | Path,
     dataset_hash: str,
     contract_path: str | Path,
     key_path: str | Path,
+    budget: int | None = None,
     host: str = "127.0.0.1",
-    port: int = 8766,
-    token: str | None = None,
-) -> tuple[ThreadingHTTPServer, str]:
+) -> int:
+    """Entry point of the label-service process.
+
+    Prints one JSON line ``{"ready": true, "port": ..., "token": ...}`` on
+    stdout and serves until its stdin closes, so it cannot outlive the process
+    that started it.
+    """
     from .contract import load_contract
 
     vault = Vault(vault_root)
     contract = load_contract(contract_path)
-    service = SealedLabelService(vault, dataset_hash, contract, key_path)
-    token = token or secrets.token_urlsafe(24)
+    service = SealedLabelService(vault, dataset_hash, contract, key_path, budget=budget)
+    token = secrets.token_urlsafe(32)
     handler = type("LabelHandler", (_LabelHandler,), {"service": service, "token": token})
-    httpd = ThreadingHTTPServer((host, port), handler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    return httpd, token
+    httpd = ThreadingHTTPServer((host, 0), handler)
+
+    def _watch_parent() -> None:
+        try:
+            sys.stdin.read()
+        finally:
+            httpd.shutdown()
+
+    threading.Thread(target=_watch_parent, daemon=True).start()
+    ready = {"ready": True, "port": httpd.server_address[1], "token": token, "pid": os.getpid()}
+    print(json.dumps(ready), flush=True)
+    httpd.serve_forever()
+    httpd.server_close()
+    return 0
 
 
 class SealedClient:
     """Search-side client. Sends candidate specifications; receives aggregates."""
 
-    def __init__(self, base_url: str, token: str, timeout: float = 120.0):
+    def __init__(self, base_url: str, token: str, timeout: float = 300.0):
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
@@ -623,15 +718,109 @@ class SealedClient:
         req.add_header("Authorization", f"Bearer {self.token}")
         if data is not None:
             req.add_header("Content-Type", "application/json")
-        with urlrequest.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urlrequest.urlopen(req, timeout=self.timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urlerror.HTTPError as exc:
+            body = json.loads(exc.read().decode("utf-8") or "{}")
+            if exc.code == 429:
+                raise BudgetExhausted(body.get("message", "unsealing budget exhausted")) from None
+            if exc.code == 401:
+                raise PermissionDenied("label service rejected the token") from None
+            raise VaultError(f"label service error {body.get('error')}: {body.get('message')}") from None
 
     def meta(self) -> dict:
         return self._request("GET", "/meta")
 
-    def confirm(self, candidate: dict, purpose: str = "confirmation", cost: int = 1, detail: str = "full", seed: int = 0) -> dict:
-        return self._request(
-            "POST",
-            "/confirm",
-            {"candidate": candidate, "purpose": purpose, "cost": cost, "detail": detail, "seed": seed},
+    def confirm(
+        self,
+        candidate: dict[str, Any] | Candidate,
+        purpose: str = "confirmation",
+        cost: int = 1,
+        detail: str = "full",
+        seed: int = 0,
+        bootstrap: int = 1000,
+    ) -> dict:
+        spec = candidate.to_dict() if isinstance(candidate, Candidate) else candidate
+        payload = {
+            "candidate": spec,
+            "purpose": purpose,
+            "cost": cost,
+            "detail": detail,
+            "seed": seed,
+            "bootstrap": bootstrap,
+        }
+        return self._request("POST", "/confirm", payload)
+
+
+class LabelServiceProcess:
+    """Start the label service in its own process; yield a client to it.
+
+    The caller hands the key location to the child and keeps nothing else: the
+    returned client carries only a URL and a token.
+    """
+
+    def __init__(
+        self,
+        vault_root: str | Path,
+        dataset_hash: str,
+        contract_path: str | Path,
+        key_path: str | Path,
+        budget: int | None = None,
+        startup_timeout: float = 120.0,
+    ):
+        self.args = [
+            sys.executable, "-m", "autoresearch", "label-service",
+            "--vault-root", str(vault_root),
+            "--dataset", dataset_hash,
+            "--contract", str(contract_path),
+            "--key", str(key_path),
+        ]
+        if budget is not None:
+            self.args += ["--budget", str(int(budget))]
+        self.startup_timeout = startup_timeout
+        self.proc: subprocess.Popen | None = None
+        self.pid: int | None = None
+
+    def __enter__(self) -> SealedClient:
+        env = os.environ.copy()
+        pkg_root = str(Path(__file__).resolve().parents[1])
+        env["PYTHONPATH"] = pkg_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        self.proc = subprocess.Popen(
+            self.args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
         )
+        ready: dict[str, Any] = {}
+
+        def _read_ready() -> None:
+            line = self.proc.stdout.readline() if self.proc and self.proc.stdout else ""
+            if line.strip():
+                ready.update(json.loads(line))
+
+        reader = threading.Thread(target=_read_ready, daemon=True)
+        reader.start()
+        reader.join(self.startup_timeout)
+        if not ready.get("ready"):
+            self._stop()
+            err = self.proc.stderr.read() if self.proc.stderr else ""
+            raise VaultError(f"label service failed to start: {err.strip()[-2000:]}")
+        self.pid = int(ready["pid"])
+        return SealedClient(f"http://127.0.0.1:{ready['port']}", ready["token"])
+
+    def _stop(self) -> None:
+        if self.proc is None:
+            return
+        try:
+            if self.proc.stdin:
+                self.proc.stdin.close()
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+
+    def __exit__(self, *exc: Any) -> None:
+        self._stop()
