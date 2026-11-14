@@ -145,3 +145,55 @@ def test_substrate_reset_keeps_calibration(tmp_path):
     write_demo_files(tmp_path, seed=3, reset=True, n_patients=120, n_confirmation_groups=40)
     write_demo_files(tmp_path, seed=3, reset=True, n_patients=120, n_confirmation_groups=40)
     assert (cal / "oc_table.json").exists()
+
+
+WALL_CLOCK_LOGS = {"run.json", "events.jsonl"}
+
+
+def test_two_processes_produce_byte_identical_artifacts(tmp_path):
+    """Spec §6 acceptance test 4: two runs, two processes, byte-identical artifacts.
+
+    Each run is a fresh interpreter with a different PYTHONHASHSEED. Only the
+    two logs that carry wall-clock time (run.json, events.jsonl) may differ, and
+    the event log must match once timestamps are removed.
+    """
+    import os
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from autoresearch.certificate import load_or_create_key
+
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    roots = [tmp_path / "a", tmp_path / "b"]
+    for r in roots:
+        write_demo_files(r, seed=11, reset=True, n_patients=200, n_confirmation_groups=160)
+    load_or_create_key(roots[0] / "state" / "certificate.key")
+    shutil.copy2(roots[0] / "state" / "certificate.key", roots[1] / "state" / "certificate.key")
+
+    code = (
+        "import sys\n"
+        "from autoresearch.demo import run_demo\n"
+        "print(run_demo(sys.argv[1], n_permutations=9, candidate_budget=12, generations=1)['run_id'])\n"
+    )
+    run_ids = []
+    for r, hashseed in zip(roots, ("1", "98765")):
+        env = dict(os.environ, PYTHONPATH=src, PYTHONHASHSEED=hashseed)
+        out = subprocess.run([sys.executable, "-c", code, str(r)], env=env, capture_output=True, text=True, check=True)
+        run_ids.append(out.stdout.strip())
+    assert run_ids[0] == run_ids[1]
+
+    da, db = (r / "runs" / run_ids[0] for r in roots)
+    names = sorted(p.name for p in da.iterdir())
+    assert names == sorted(p.name for p in db.iterdir())
+    assert "certificate.json" in names
+    for name in names:
+        if name in WALL_CLOCK_LOGS:
+            continue
+        assert (da / name).read_bytes() == (db / name).read_bytes(), name
+
+    def strip(events):
+        return [{k: v for k, v in e.items() if k != "ts"} for e in events]
+
+    assert strip(read_jsonl(da / "events.jsonl")) == strip(read_jsonl(db / "events.jsonl"))

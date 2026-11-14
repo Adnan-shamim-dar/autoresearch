@@ -73,3 +73,20 @@ def test_bootstrap_summary_reports_ci_and_p_value():
     assert out["ci_low"] < 0.05 < out["ci_high"]
     assert 0.0 <= out["p_one_sided"] <= 1.0
     assert out["n_boot"] == 500
+
+
+def test_paired_per_group_delta_agrees_with_reference_to_1e9():
+    """Spec §6 acceptance test 3, on the primary estimand (paired per-group delta AUC)."""
+    y, groups, s = _toy(n_groups=12, per_group=15, seed=21)
+    base = s + np.random.default_rng(5).normal(scale=0.8, size=len(s))
+    ours = metrics.per_group_delta(y, groups, s, base)
+    checked = 0
+    for g in np.unique(groups):
+        idx = groups == g
+        if len(np.unique(y[idx])) < 2:
+            assert g not in ours
+            continue
+        ref = roc_auc_score(y[idx], s[idx]) - roc_auc_score(y[idx], base[idx])
+        assert abs(ours[g] - ref) < 1e-9
+        checked += 1
+    assert checked >= 10

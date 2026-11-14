@@ -164,3 +164,51 @@ def test_selection_null_does_not_reward_noise():
     # The best of K on noise is still positive; only the priced p tells the truth.
     assert null["observed_max_stat"] > 0
     assert null["p_value"] > 0.05
+
+
+def _noise_trial(seed: int):
+    """Search pure noise, then test the winner held-out and on its own units."""
+    from autoresearch import metrics
+    from autoresearch.utils import rng_for
+
+    df = generate_immunotherapy_data(seed=100 + seed, n_patients=80)
+    g = df["patient_id"].astype(str).to_numpy()
+    df["immunogenic"] = permute_within_groups(df["immunogenic"].to_numpy(), g, rng_for("noise", seed))
+    pids = sorted(df["patient_id"].unique())
+    held = set(rng_for("split", seed).permutation(pids)[:40])
+    disc = df[~df["patient_id"].isin(held)].reset_index(drop=True)
+    conf = df[df["patient_id"].isin(held)].reset_index(drop=True)
+    contract = Contract(make_contract_dict(effect=0.04, k_candidates=32, confirmation_n=len(conf)))
+    contract.validate_static()
+    contract.attach_data(disc)
+    budget = compute_budget(contract, disc)
+    fm = FeatureMatrix(disc, contract, fit=True)
+    cands = [c for c in Proposer(contract=contract, data=disc, fm=fm, budget=budget, seed=seed).seed_candidates(n=32) if c]
+    sel = evaluate_candidates(disc, contract, cands, fm, disc["baseline_score"].to_numpy(), budget, n_splits=5, seed=seed).selected_candidate
+
+    def gate(frame, fmx):
+        y = frame["immunogenic"].to_numpy().astype(int)
+        groups = frame["patient_id"].astype(str).to_numpy()
+        s = fmx.score_candidate(sel)
+        base = fmx.score_candidate(contract.baseline_candidate())
+        summ = metrics.bootstrap_summary(metrics.group_bootstrap_deltas(y, groups, s, base, n_boot=300, seed=seed))
+        return summ, bool(summ["ci_low"] > 0 and summ["p_one_sided"] <= 0.05)
+
+    held_out = gate(conf, FeatureMatrix(conf, contract, fit=False, fit_stats=fm.export_fit_stats()))
+    same_units = gate(disc, fm)
+    return held_out, same_units
+
+
+def test_pure_noise_promotes_nothing_and_breaking_the_split_does():
+    """Spec §6 acceptance test 2, shown failing when the guard is broken.
+
+    Guard: never fit and test on the same units. Held out, the CI contains zero
+    every time; tested on the units it was selected on, noise gets promoted.
+    """
+    trials = [_noise_trial(seed) for seed in range(8)]
+    held = [t[0] for t in trials]
+    same = [t[1] for t in trials]
+    assert not any(promoted for _, promoted in held)
+    assert all(s["ci_low"] <= 0 <= s["ci_high"] for s, _ in held)
+    assert sum(promoted for _, promoted in same) >= 2
+    assert np.mean([s["delta"] for s, _ in same]) > np.mean([s["delta"] for s, _ in held])

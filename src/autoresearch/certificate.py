@@ -12,8 +12,6 @@ from .utils import (
     canonical_json,
     ensure_dir,
     json_safe,
-    now_iso,
-    read_json,
     sha256_obj,
 )
 
@@ -143,7 +141,6 @@ def save_certificate(cert: dict[str, Any], run_dir: str | Path, key: bytes | Non
     atomic_write_json(d / "certificate_manifest.json", {
         "certificate_hash": cert.get("certificate_hash"),
         "files": {"certificate.json": "certificate.json", "certificate.md": "certificate.md"},
-        "written_at": now_iso(),
     })
     return jpath, mpath
 

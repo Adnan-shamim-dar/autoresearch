@@ -564,6 +564,9 @@ class Engine:
                 "n": confirmation.get("n"),
             }
         )
+        # The vault ledger head carries wall-clock time; it belongs in the run
+        # log, not in an artifact that must be byte-identical across processes.
+        sealed_access_entry = confirmation.pop("access_entry_hash", None)
         atomic_write_json(self.run_dir / "confirmation.json", confirmation)
         self.emit(
             "confirm",
@@ -765,6 +768,7 @@ class Engine:
                 "verdict": decision.verdict,
                 "config": self._config_summary(),
                 "vault_ledger_head": self.vault_head(),
+                "sealed_access_entry_hash": sealed_access_entry,
                 "registry": self.registry.summary(),
                 "files": self._manifest(),
             },
