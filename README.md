@@ -56,9 +56,12 @@ Without installing, run commands as `python -m autoresearch ...` with `PYTHONPAT
 | `ledger` | Verify the vault and registry hash chains |
 | `calibrate [--real] [--publish-only]`, `leak-test` | Rebuild the synthetic or real-data OC table; run the feedback-leak test |
 | `backtest --data RPPdataConverted.xlsx` | Pre-registered replication back-test |
+| `bench [--agent NAME] [--command CMD] [--salt S]` | Discovery Validity Benchmark; `--command` runs any external agent |
 | `serve`, `mcp` | Web console; MCP stdio server (`autoresearch_verify`, `_check_certificate`, `_power`, `_validate`, `_catalog`, `_run`) |
 
 ## Published numbers
+
+**Discovery Validity Benchmark** ([docs/BENCHMARK.md](docs/BENCHMARK.md)). This is the false-discovery rate of automated discovery agents on real data with hidden, re-drawn ground truth. Any agent can be run through it. Over 200 tasks, a search that doesn't price itself claims a discovery in **51% of pure-noise tasks**. A holdout tested once claims one in 7% of null tasks; an agent that re-tests the same holdout after each failure, in 14%. AutoResearch made **no false claims**, but its power oracle refuses too often: it found 9% of real effects, or 42% with that refusal skipped. Calibrating the oracle is the main open engineering task.
 
 **Replication back-test, pre-registered** ([docs/backtest/RESULTS.md](docs/backtest/RESULTS.md)). Run blind on 92 published psychology findings with known replication outcomes (Reproducibility Project: Psychology), the gate's search-priced rule accepted 47 and refused 45. **Its accepts replicated at 49%, its refusals at 24%** (Fisher p = 0.018). The rule was committed to git before any outcome was joined.
 
@@ -97,6 +100,7 @@ The adversary killed **0 of 39** honest promotions (95% CI 0–9%). The gate is 
 | `engine.py`, `api.py` | Orchestration; `verify(contract, data, candidate)` |
 | `calibration.py`, `calibration_real.py`, `feedback_leak.py` | OC harness (synthetic and real-data plasmode); spec §5 leak test |
 | `backtest.py` | Pre-registered replication back-test |
+| `bench.py` | Discovery Validity Benchmark: tasks, reference agents, external-agent protocol, scoring |
 | `demo.py`, `wdbc.py` | The two domains |
 | `cli.py`, `server.py`, `mcp_server.py`, `web/` | Interfaces |
 
@@ -115,6 +119,7 @@ The spec's acceptance tests are each shown failing when their guard is broken: a
 
 ## Limitations
 
+- **The power oracle over-refuses.** On the benchmark it refused 167 of 200 tasks, many with real effects above the declared threshold, so the engine is safe but finds few effects. The fix must be judged on a fresh benchmark salt.
 - **Evidence is narrow.** The real-data OC table uses one dataset without groups. The back-test applies the gate's pricing to summary statistics, not the full engine, and depends on an implicit search size (K = 10; not significant at K = 5). No third party has reproduced the results yet. [docs/REPRODUCE.md](docs/REPRODUCE.md) gives the one command for that.
 - **Same-account OS lock.** The lock stops accidental reads from the search process, not a deliberate unlock by the same OS account. Full separation means running the label service under its own account.
 - **Symmetric signing key.** Certificates use an HMAC key in `state/`, so a key holder can both verify and sign. Public verifiability would need asymmetric signatures.

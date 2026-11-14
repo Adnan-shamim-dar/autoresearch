@@ -43,6 +43,7 @@ Status of this build against `Auto.md` (build specification v1), section by sect
 - `MDE_plain`, `MDE_search(K)`, verdict (`ANSWERABLE` / `ANSWERABLE_IF_K_LE(n)` / `NOT_ANSWERABLE`), prescription, MDE(n, K) and power curves.
 - The design advisor ranks partial pooling, direction aggregation, endpoint substitution, recovering discarded information, stratify/match and sequential design, each with power, what it establishes and what it does not.
 - Direction aggregation is also **executable**: a contract with `commitments: {signs: true}` runs its pre-committed sign test as one aggregate sealed query.
+- **Known defect (measured by the benchmark):** the oracle over-refuses. Its variance estimate comes from a label-free equal-weight combination of all declared features, which is noisier against the baseline than a realistic winning rule. On the benchmark's development set it refused 167 of 200 tasks, many with real effects well above the declared 0.05.
 - **Acceptance test:** at a planted 0.04 with MDE about 0.09 the verdict is `NOT_ANSWERABLE`, and the prescribed sample size recovers the effect in simulation (`tests/test_power.py`).
 
 ### §4 Budget
@@ -125,7 +126,7 @@ Status of this build against `Auto.md` (build specification v1), section by sect
 6. **Private refusals.** Every certificate starts private; `autoresearch publish --by` is an attributed ledger event; listings hide unpublished refusal text.
 7. **Refusal taxonomy.** `autoresearch refusals`.
 8. **Run it on itself.** *Partial:* the engine's own calibration and leak test are published with their parameters, but design choices are not yet charged to an alpha ledger of their own.
-9. **Certified vs uncertified.** Not applicable until there's a leaderboard.
+9. **Certified vs uncertified.** There is now a leaderboard: the Discovery Validity Benchmark (`docs/BENCHMARK.md`) scores any discovery agent's false-claim rate and power against hidden, re-drawn ground truth on four real datasets. It also measures this engine. No false claims in 200 tasks, but the power oracle refuses 167 of them, so only 9% of real effects are found (42% with the refusal skipped). The oracle's variance estimate, from an equal-weight reference candidate, is too pessimistic. That is an open §3 calibration defect, measured rather than assumed.
 
 ### §13 Milestones
 - **1–7:** met.

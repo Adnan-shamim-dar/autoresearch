@@ -734,6 +734,24 @@ def cmd_leak_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    from .bench import AGENTS, run_bench
+
+    agents = list(args.agent or AGENTS)
+    if args.command and "external" not in agents:
+        agents.append("external")
+    payload = run_bench(_root(args), agents, n_tasks=args.tasks, salt=args.salt,
+                        reveal_salt=not args.hide_salt, command=args.command, workers=args.workers)
+    for name, s in payload["leaderboard"].items():
+        print(
+            f"{name:<16} claims {s['claims']:>4} | false {s['false_discoveries']:>3} | "
+            f"null-task claim rate {fmt_pct(s['null_claim_rate'])} | power {fmt_pct(s['power'])} | "
+            f"strict power {fmt_pct(s['strict_power'])}"
+        )
+    print(f"Leaderboard: {_root(args) / 'bench' / 'LEADERBOARD.md'}")
+    return 0
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     from .backtest import write_results
 
@@ -947,6 +965,15 @@ def build_parser() -> argparse.ArgumentParser:
     leak = sub.add_parser("leak-test", help="Run the spec §5 feedback-leak test and publish the result")
     leak.add_argument("--replicates", type=int, default=100)
     leak.set_defaults(func=cmd_leak_test)
+
+    bench = sub.add_parser("bench", help="Discovery Validity Benchmark: false-discovery rates of discovery agents")
+    bench.add_argument("--agent", action="append", help="Built-in agent (repeatable): naive_search, holdout_search, iterating_agent, autoresearch")
+    bench.add_argument("--command", default=None, help="External agent command; {task_dir} is replaced")
+    bench.add_argument("--tasks", type=int, default=200)
+    bench.add_argument("--salt", default="public-dev-v1", help="Task seed; keep it secret and publish its hash for an official run")
+    bench.add_argument("--hide-salt", action="store_true")
+    bench.add_argument("--workers", type=int, default=0)
+    bench.set_defaults(func=cmd_bench)
 
     bt = sub.add_parser("backtest", help="Run the pre-registered replication back-test (milestone 9)")
     bt.add_argument("--data", required=True, help="RPPdataConverted.xlsx from the RPP repository")

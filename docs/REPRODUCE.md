@@ -14,6 +14,7 @@ python scripts/reproduce_proofs.py
 |---|---|---|
 | `unit_tests` | The fast test suite, including every acceptance test with its broken-guard counterpart | all pass |
 | `replication_backtest_rpp` | Downloads the Reproducibility Project: Psychology data (SHA-256 checked) and re-runs the pre-registered back-test | 47 accepted / 45 refused; 23 and 11 replicated |
+| `benchmark_sample` | Re-runs 20 Discovery Validity Benchmark tasks for the three fast reference agents | 60/60 rows match |
 | `wdbc_real_data_refusal_and_signs` | Builds the WDBC domain from scikit-learn, seals it, runs the engine | refused as underpowered; 9 of 10 pre-committed signs held; signature and manifest verify |
 
 ## Full (about an hour, mostly the synthetic table)

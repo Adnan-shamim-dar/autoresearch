@@ -87,6 +87,25 @@ def check_wdbc(work: Path) -> dict[str, Any]:
     return {"ok": obs == exp, "observed": obs, "expected": exp}
 
 
+def check_bench_sample(_work: Path) -> dict[str, Any]:
+    """Re-run 20 benchmark tasks for the three fast reference agents and compare row by row."""
+    from autoresearch.bench import run_task
+
+    published = json.loads((REPO / "bench" / "results.json").read_text(encoding="utf-8"))
+    salt = published["salt"]
+    keys = ("task_id", "agent", "claimed", "outcome")
+    want = {(r["agent"], r["task_id"]): {k: r[k] for k in keys} for r in published["rows"]}
+    obs, exp = [], []
+    for agent in ("naive_search", "holdout_search", "iterating_agent"):
+        for i in range(20):
+            row = run_task((salt, i, agent, None))
+            obs.append({k: row[k] for k in keys})
+            exp.append(want[(agent, row["task_id"])])
+    mismatches = [o for o, e in zip(obs, exp) if o != e]
+    return {"ok": not mismatches, "observed": f"{len(obs) - len(mismatches)}/{len(obs)} rows match",
+            "expected": f"{len(exp)}/{len(exp)} rows match", "mismatches": mismatches[:5]}
+
+
 def _oc_rows(payload: dict[str, Any]) -> list[tuple[float, float, float]]:
     return [(r["effect"], round(r["detect"], 3), round(r["detect_confirmed"], 3)) for r in payload["rows"]]
 
@@ -122,6 +141,7 @@ def main() -> int:
         ("unit_tests", check_unit_tests),
         ("replication_backtest_rpp", check_backtest),
         ("wdbc_real_data_refusal_and_signs", check_wdbc),
+        ("benchmark_sample", check_bench_sample),
     ]
     if args.full:
         checks += [("oc_table_synthetic", check_oc_synthetic), ("oc_table_real_data", check_oc_real)]

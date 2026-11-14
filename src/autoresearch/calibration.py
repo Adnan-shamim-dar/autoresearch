@@ -395,7 +395,11 @@ def evaluate_replicate(
         "observed_max_stat": null_summary.get("observed_max_stat"),
     }
 
-    if power.verdict == "NOT_ANSWERABLE":
+    if payload.get("return_objects"):
+        # In-process callers (the benchmark's AutoResearch agent) need the rule itself.
+        row["_objects"] = {"candidate": selected, "contract": contract}
+
+    if power.verdict == "NOT_ANSWERABLE" and not payload.get("diagnostic_skip_power_refusal"):
         row.update(
             {
                 "tier": "power_refusal",
