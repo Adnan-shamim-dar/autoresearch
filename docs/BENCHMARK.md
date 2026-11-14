@@ -33,11 +33,15 @@ On the two 3,000-row datasets:
 | AutoResearch | 0 | 10 |
 | AutoResearch, diagnostic | 0 | 37 |
 
-## What this shows
+## Pre-registered evaluation on fresh tasks
+
+The development set below was used to diagnose the engine, so the fix was judged on 300 new tasks drawn from a secret seed whose hash was committed first. All four pre-registered hypotheses passed: [bench_eval/RESULTS.md](bench_eval/RESULTS.md). The headline: with `if_underpowered: proceed`, AutoResearch found 41% of real effects (78% on 3,000-row data) with **0 false claims in 142 null tasks**. An agent re-testing its holdout made false claims on 10.6% of them; the same holdout used once, 2.8%.
+
+## What this shows (development set)
 
 1. **The problem is large.** Given an outcome unrelated to anything measured, a search that doesn't price itself reports a discovery about half the time.
 2. **Agents make a correct procedure unsafe.** A holdout tested once is close to its nominal error rate (7%). Let the analyst re-test against the same holdout after each failure, which is what a tool-using agent does, and the false-claim rate doubles (14%). Sealing exists to block exactly this: the vault answers once.
-3. **AutoResearch made no false claims in 200 tasks, but it is too conservative to sell as it stands.** Its power oracle refused 167 of 200 tasks as underpowered for the declared 0.05 effect. Many of those effects were real and larger than 0.05. With that refusal skipped, the same gate finds 42% of real effects (67% on the larger datasets), still with no false claims. The oracle estimates its variance from an equal-weight combination of all features, which over-states the noise of a realistic winning rule. **Calibrating the power oracle is the most valuable engineering task now open**, and this benchmark measures it.
+3. **AutoResearch made no false claims in 200 tasks, but by default it refuses most of them.** *Correction:* the rest of this point originally blamed an inflated variance estimate. Measurement showed the estimate is accurate (predicted/realised SE 1.12 and 1.03); the refusals are the spec's policy of not spending sealed data on an underpowered question, now the attributed contract choice `decision.if_underpowered`. Original text: Its power oracle refused 167 of 200 tasks as underpowered for the declared 0.05 effect. Many of those effects were real and larger than 0.05. With that refusal skipped, the same gate finds 42% of real effects (67% on the larger datasets), still with no false claims. The oracle estimates its variance from an equal-weight combination of all features, which over-states the noise of a realistic winning rule. **Calibrating the power oracle is the most valuable engineering task now open**, and this benchmark measures it.
 4. **Small data is hard for everyone.** On 442–569 rows, every agent that keeps its error rate low finds few effects.
 
 ## Rules

@@ -48,3 +48,14 @@ A dated record of what was built, what was decided and why, and what the results
 
 - A public GitHub repo (irreversible once public), the licence (pyproject says Apache-2.0; no LICENSE file yet), a name and contact for the materials, and a go-ahead per outreach batch.
 - `/compact` is a command the user types; Claude can't trigger it.
+
+## 2026-11-14: pre-registered evaluation of `if_underpowered: proceed` (scored)
+
+- The salt hash was committed in 30bb4dc before the run. The salt is now revealed: `eval-2026-11-14-03b53ae2cf9bf59ddc69c2311cf9a5d2`; its hash matches.
+- 300 fresh tasks, 5 agents. **All four hypotheses passed:** H1 0/142 null claims; H2 56/72 effects on 3,000-row data; H3 iterating 15/142 vs holdout 4/142 (p = 0.008); H4 naive 22/68 pure-noise claims (32%, down from 51% on the dev set).
+- Honest caveat recorded in `docs/bench_eval/RESULTS.md`: a one-shot holdout that nobody peeks at finds more effects (68%) at 2.8% false claims. AutoResearch's edge is resistance to re-testing (the vault answers once) and the signed record.
+
+## 2026-11-14: LLM agent adapter and public-key signatures
+
+- `examples/bench/llm_agent.py`: a Claude analyst (`claude-opus-5-5`, effort medium, manual tool loop) with the tools `evaluate_rule` and `submit_claim`. Server-side refusal fallback is on (`fallbacks: "default"`). The tool logic is tested locally. **The API path is untested: there is no key on this machine.** Each task costs money, so start with about 40 tasks.
+- Certificates now carry an Ed25519 public-key signature next to the HMAC one. The key is derived from the existing secret, and signatures are deterministic, so certificates stay byte-reproducible. Verify with `autoresearch public-key`. `cryptography` is an optional dependency (`pip install -e ".[sign]"`). It was installed into the project's Python 3.14; `pip` on PATH points at a different Python (3.11).

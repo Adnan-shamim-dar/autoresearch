@@ -95,7 +95,9 @@ def test_without_key_only_hash_is_checked(cert, key):
     signed["claim"] = "edited"
     result = verify_certificate(signed)
     assert not result["valid"]
-    assert result["reasons"] == ["certificate_hash_mismatch"]
+    assert result["reasons"][0] == "certificate_hash_mismatch"
+    # With `cryptography` installed, the public-key signature also catches the edit, no secret needed.
+    assert set(result["reasons"][1:]) <= {"public_signature_invalid"}
 
 
 def test_save_writes_json_markdown_and_manifest(cert, key, tmp_path):
@@ -114,3 +116,30 @@ def test_markdown_renders_refusal_without_optional_sections():
     assert "REFUSED" in md
     assert "## Refusals and limitations" in md
     assert "unsigned" in md
+
+
+def test_public_key_signature_verifies_without_the_secret_key():
+    """Anyone with the public key can check origin and integrity; no secret needed."""
+    pytest.importorskip("cryptography")
+    from autoresearch.certificate import public_key_hex, sign_certificate, verify_certificate
+
+    key = b"k" * 32
+    cert = sign_certificate({"claim": "x", "tier": "confirmed"}, key)
+    pub = public_key_hex(key)
+    assert cert["public_signature"]["public_key"] == pub
+    assert verify_certificate(cert, public_key=pub)["valid"]
+    # Deterministic: re-signing gives identical bytes (certificates stay reproducible).
+    assert sign_certificate({"claim": "x", "tier": "confirmed"}, key) == cert
+
+
+def test_public_key_signature_detects_tampering_and_wrong_signer():
+    pytest.importorskip("cryptography")
+    from autoresearch.certificate import public_key_hex, sign_certificate, verify_certificate
+
+    key = b"k" * 32
+    cert = sign_certificate({"claim": "x"}, key)
+    forged = dict(cert, claim="y")
+    forged["certificate_hash"] = verify_certificate(forged)["certificate_hash"]
+    assert "public_signature_invalid" in verify_certificate(forged)["reasons"]
+    other = public_key_hex(b"z" * 32)
+    assert "public_key_not_trusted" in verify_certificate(cert, public_key=other)["reasons"]

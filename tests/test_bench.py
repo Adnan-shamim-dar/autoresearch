@@ -75,3 +75,17 @@ def test_external_agent_protocol_round_trip():
     agent = external_agent(f'"{sys.executable}" "{REPO / "examples" / "bench" / "example_agent.py"}" {{task_dir}}')
     claim = agent(make_task("s1", 0), 0)
     assert "claim" in claim and "weights" in claim
+
+
+def test_llm_agent_tool_scores_rules_without_calling_any_api(tmp_path):
+    """The model-facing tool is plain local computation; the API is only touched in run()."""
+    import importlib.util
+
+    spec_ = importlib.util.spec_from_file_location("llm_agent", REPO / "examples" / "bench" / "llm_agent.py")
+    mod = importlib.util.module_from_spec(spec_)
+    spec_.loader.exec_module(mod)
+    task = make_task("s1", 0)
+    public = task.public_spec()
+    out = mod.evaluate_rule(task.discovery_frame(), public, [{"feature": task.baseline, "weight": 1.0}], "all")
+    assert out["difference"] == pytest.approx(0.0)
+    assert "error" in mod.evaluate_rule(task.discovery_frame(), public, [{"feature": "nope", "weight": 1}], "all")

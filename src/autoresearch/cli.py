@@ -476,6 +476,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"signature              : {('OK' if sig_ok else 'FAILED') if key else 'not checked (no key)'}")
         print(f"certificate hash       : {result['certificate_hash']}")
         print(f"key fingerprint        : {result.get('key_fingerprint')}")
+        pub_bad = {r for r in result["reasons"] if r.startswith("public_")}
+        print(f"public-key signature   : {('FAILED ' + ','.join(sorted(pub_bad))) if pub_bad else ('OK' if result.get('public_signature') else 'none')}")
         if manifest:
             print(f"artifact manifest      : {'OK' if manifest['ok'] else 'FAILED'} ({manifest['checked']} files)")
             for m in manifest["mismatches"]:
@@ -734,6 +736,21 @@ def cmd_leak_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_public_key(args: argparse.Namespace) -> int:
+    from .certificate import public_key_hex
+
+    path = _root(args) / "state" / "certificate.key"
+    if not path.exists():
+        print(f"No signing key at {path}; run a command that issues a certificate first.")
+        return 1
+    pub = public_key_hex(path.read_bytes())
+    if pub is None:
+        print("Public-key signatures need the optional 'cryptography' package: pip install cryptography")
+        return 1
+    print(pub)
+    return 0
+
+
 def cmd_bench(args: argparse.Namespace) -> int:
     from .bench import AGENTS, run_bench
 
@@ -965,6 +982,9 @@ def build_parser() -> argparse.ArgumentParser:
     leak = sub.add_parser("leak-test", help="Run the spec §5 feedback-leak test and publish the result")
     leak.add_argument("--replicates", type=int, default=100)
     leak.set_defaults(func=cmd_leak_test)
+
+    pk = sub.add_parser("public-key", help="Print the Ed25519 public key that verifies this root's certificates")
+    pk.set_defaults(func=cmd_public_key)
 
     bench = sub.add_parser("bench", help="Discovery Validity Benchmark: false-discovery rates of discovery agents")
     bench.add_argument("--agent", action="append", help="Built-in agent (repeatable): naive_search, holdout_search, iterating_agent, autoresearch")

@@ -16,7 +16,7 @@ Status of this build against `Auto.md` (build specification v1), section by sect
 | 8 | Registry, procedure registration, alpha ledger | Built |
 | 9 | Adversary + its own false-alarm rate | Built |
 | 10 | Certificate | Built |
-| 11 | Interfaces | Partial: no public registry or DOIs |
+| 11 | Interfaces | Partial: no public registry or DOIs; certificates now carry Ed25519 public-key signatures |
 | 12 | Non-obvious constraints | Mostly built; see below |
 | 13 | Milestones | 1–10 met |
 | 14 | The five proofs | 1 and 4 met; 5 has a one-command kit and awaits a third party; 2 and 3 owed |
@@ -43,7 +43,7 @@ Status of this build against `Auto.md` (build specification v1), section by sect
 - `MDE_plain`, `MDE_search(K)`, verdict (`ANSWERABLE` / `ANSWERABLE_IF_K_LE(n)` / `NOT_ANSWERABLE`), prescription, MDE(n, K) and power curves.
 - The design advisor ranks partial pooling, direction aggregation, endpoint substitution, recovering discarded information, stratify/match and sequential design, each with power, what it establishes and what it does not.
 - Direction aggregation is also **executable**: a contract with `commitments: {signs: true}` runs its pre-committed sign test as one aggregate sealed query.
-- **Known defect (measured by the benchmark):** the oracle over-refuses. Its variance estimate comes from a label-free equal-weight combination of all declared features, which is noisier against the baseline than a realistic winning rule. On the benchmark's development set it refused 167 of 200 tasks, many with real effects well above the declared 0.05.
+- **Underpowered questions are a declared choice.** `decision.if_underpowered: refuse` (default, as specified) or `proceed`. Proceed must name who chose it, is printed on the certificate, and leaves the gate unchanged. Pre-registered on 300 fresh benchmark tasks: 0 false claims in 142 null tasks, 41% of real effects found vs 10% under refuse (`docs/bench_eval/RESULTS.md`). The oracle's variance estimate was measured as accurate (predicted/realised SE 1.12 and 1.03), which corrects an earlier note that blamed it.
 - **Acceptance test:** at a planted 0.04 with MDE about 0.09 the verdict is `NOT_ANSWERABLE`, and the prescribed sample size recovers the effect in simulation (`tests/test_power.py`).
 
 ### §4 Budget
@@ -126,7 +126,7 @@ Status of this build against `Auto.md` (build specification v1), section by sect
 6. **Private refusals.** Every certificate starts private; `autoresearch publish --by` is an attributed ledger event; listings hide unpublished refusal text.
 7. **Refusal taxonomy.** `autoresearch refusals`.
 8. **Run it on itself.** *Partial:* the engine's own calibration and leak test are published with their parameters, but design choices are not yet charged to an alpha ledger of their own.
-9. **Certified vs uncertified.** There is now a leaderboard: the Discovery Validity Benchmark (`docs/BENCHMARK.md`) scores any discovery agent's false-claim rate and power against hidden, re-drawn ground truth on four real datasets. It also measures this engine. No false claims in 200 tasks, but the power oracle refuses 167 of them, so only 9% of real effects are found (42% with the refusal skipped). The oracle's variance estimate, from an equal-weight reference candidate, is too pessimistic. That is an open §3 calibration defect, measured rather than assumed.
+9. **Certified vs uncertified.** There is now a leaderboard: the Discovery Validity Benchmark (`docs/BENCHMARK.md`) scores any discovery agent's false-claim rate and power against hidden, re-drawn ground truth on four real datasets. It also measures this engine: no false claims in 500 tasks across the development and pre-registered sets. See §3 for the underpowered-question policy.
 
 ### §13 Milestones
 - **1–7:** met.

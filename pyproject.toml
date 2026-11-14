@@ -20,7 +20,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "cryptography>=42"]
+sign = ["cryptography>=42"]
 
 [project.scripts]
 autoresearch = "autoresearch.cli:main"

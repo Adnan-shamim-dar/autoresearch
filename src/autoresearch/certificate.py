@@ -33,7 +33,56 @@ def key_fingerprint(key: bytes) -> str:
 
 
 def _body(cert: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in cert.items() if k not in ("certificate_hash", "signature")}
+    return {k: v for k, v in cert.items() if k not in ("certificate_hash", "signature", "public_signature")}
+
+
+# ---------------------------------------------------------------------------
+# Public-key signatures (Ed25519). The HMAC signature proves the certificate
+# came from a holder of the secret key, but only another key holder can check
+# it. The Ed25519 signature can be checked by anyone with the public key. The
+# signing key is derived from the secret key, so there is no second secret to
+# manage, and Ed25519 is deterministic, so certificates stay byte-reproducible.
+# Requires the optional `cryptography` package; without it, certificates carry
+# the HMAC signature only.
+# ---------------------------------------------------------------------------
+
+def _ed25519_private(key: bytes):
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except ImportError:
+        return None
+    seed = hashlib.sha256(b"autoresearch-ed25519-v1|" + key).digest()
+    return Ed25519PrivateKey.from_private_bytes(seed)
+
+
+def public_key_hex(key: bytes) -> str | None:
+    """The public verification key for a secret key, hex-encoded (None without `cryptography`)."""
+    priv = _ed25519_private(key)
+    if priv is None:
+        return None
+    from cryptography.hazmat.primitives import serialization
+
+    raw = priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return raw.hex()
+
+
+def _verify_public(body: dict[str, Any], sig: dict[str, Any], trusted_public_key: str | None) -> list[str]:
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError:
+        return ["public_signature_unchecked_cryptography_missing"]
+    reasons = []
+    embedded = str(sig.get("public_key", ""))
+    if trusted_public_key is not None and embedded != trusted_public_key:
+        reasons.append("public_key_not_trusted")
+    try:
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(embedded)).verify(
+            bytes.fromhex(str(sig.get("value", ""))), canonical_json(body).encode("utf-8")
+        )
+    except (InvalidSignature, ValueError):
+        reasons.append("public_signature_invalid")
+    return reasons
 
 
 def sign_certificate(cert: dict[str, Any], key: bytes) -> dict[str, Any]:
@@ -47,10 +96,24 @@ def sign_certificate(cert: dict[str, Any], key: bytes) -> dict[str, Any]:
         "key_fingerprint": key_fingerprint(key),
         "value": sig,
     }
+    priv = _ed25519_private(key)
+    if priv is not None:
+        out["public_signature"] = {
+            "alg": "Ed25519",
+            "public_key": public_key_hex(key),
+            "value": priv.sign(canonical_json(body).encode("utf-8")).hex(),
+        }
     return json_safe(out)
 
 
-def verify_certificate(cert: dict[str, Any], key: bytes | None = None) -> dict[str, Any]:
+def verify_certificate(
+    cert: dict[str, Any], key: bytes | None = None, public_key: str | None = None
+) -> dict[str, Any]:
+    """Check the hash, the HMAC signature (if ``key``) and the Ed25519 signature (if present).
+
+    ``public_key`` pins the expected signer; without it, the embedded key is only
+    checked for internal consistency, which proves integrity but not origin.
+    """
     reasons: list[str] = []
     body = _body(cert)
     expected_hash = sha256_obj(body)
@@ -63,9 +126,16 @@ def verify_certificate(cert: dict[str, Any], key: bytes | None = None) -> dict[s
             reasons.append("signature_mismatch")
         if sig.get("key_fingerprint") != key_fingerprint(key):
             reasons.append("key_fingerprint_mismatch")
+    psig = cert.get("public_signature")
+    if psig:
+        reasons.extend(_verify_public(body, psig, public_key))
+    elif public_key is not None:
+        reasons.append("public_signature_missing")
     return {
         "valid": len(reasons) == 0,
         "reasons": reasons,
+        "public_signature": bool(psig),
+        "public_key": (psig or {}).get("public_key"),
         "certificate_hash": expected_hash,
         "signed": bool(sig),
         "key_fingerprint": sig.get("key_fingerprint"),
@@ -252,5 +322,8 @@ def render_markdown(cert: dict[str, Any]) -> str:
     sig = cert.get("signature") or {}
     if sig:
         lines.append(f"Signature: `{sig.get('alg')}` key `{sig.get('key_fingerprint')}`")
+    psig = cert.get("public_signature") or {}
+    if psig:
+        lines.append(f"Public signature: `{psig.get('alg')}`, verify with public key `{psig.get('public_key')}`")
     lines.append("")
     return "\n".join(lines)

@@ -56,12 +56,13 @@ Without installing, run commands as `python -m autoresearch ...` with `PYTHONPAT
 | `ledger` | Verify the vault and registry hash chains |
 | `calibrate [--real] [--publish-only]`, `leak-test` | Rebuild the synthetic or real-data OC table; run the feedback-leak test |
 | `backtest --data RPPdataConverted.xlsx` | Pre-registered replication back-test |
-| `bench [--agent NAME] [--command CMD] [--salt S]` | Discovery Validity Benchmark; `--command` runs any external agent |
+| `bench [--agent NAME] [--command CMD] [--salt S]` | Discovery Validity Benchmark; `--command` runs any external agent (an LLM analyst: `examples/bench/llm_agent.py`) |
+| `public-key` | Print the Ed25519 key that verifies this root's certificates |
 | `serve`, `mcp` | Web console; MCP stdio server (`autoresearch_verify`, `_check_certificate`, `_power`, `_validate`, `_catalog`, `_run`) |
 
 ## Published numbers
 
-**Discovery Validity Benchmark** ([docs/BENCHMARK.md](docs/BENCHMARK.md)). This is the false-discovery rate of automated discovery agents on real data with hidden, re-drawn ground truth. Any agent can be run through it. Over 200 tasks, a search that doesn't price itself claims a discovery in **51% of pure-noise tasks**. A holdout tested once claims one in 7% of null tasks; an agent that re-tests the same holdout after each failure, in 14%. AutoResearch made **no false claims**, but its power oracle refuses too often: it found 9% of real effects, or 42% with that refusal skipped. Calibrating the oracle is the main open engineering task.
+**Discovery Validity Benchmark** ([docs/BENCHMARK.md](docs/BENCHMARK.md)). This is the false-discovery rate of automated discovery agents on real data with hidden, re-drawn ground truth. Any agent can be run through it. Over 200 tasks, a search that doesn't price itself claims a discovery in **51% of pure-noise tasks**. A holdout tested once claims one in 7% of null tasks; an agent that re-tests the same holdout after each failure, in 14%. AutoResearch made **no false claims**. In a pre-registered run on 300 fresh tasks ([results](docs/bench_eval/RESULTS.md)) with the contract option `if_underpowered: proceed`, it found 41% of real effects (78% on 3,000-row data) with **0 false claims in 142 null tasks**. A holdout re-tested by an iterating agent: 10.6% false claims.
 
 **Replication back-test, pre-registered** ([docs/backtest/RESULTS.md](docs/backtest/RESULTS.md)). Run blind on 92 published psychology findings with known replication outcomes (Reproducibility Project: Psychology), the gate's search-priced rule accepted 47 and refused 45. **Its accepts replicated at 49%, its refusals at 24%** (Fisher p = 0.018). The rule was committed to git before any outcome was joined.
 
@@ -119,8 +120,8 @@ The spec's acceptance tests are each shown failing when their guard is broken: a
 
 ## Limitations
 
-- **The power oracle over-refuses.** On the benchmark it refused 167 of 200 tasks, many with real effects above the declared threshold, so the engine is safe but finds few effects. The fix must be judged on a fresh benchmark salt.
+- **Refusing is the default.** By default the engine refuses questions whose declared effect is below the minimum detectable effect, which costs power when true effects are larger. `decision.if_underpowered: proceed` (attributed, printed on the certificate) runs them instead, with unchanged error control. A one-shot holdout that nobody peeks at still finds more effects; AutoResearch's edge is that the vault can't be re-tested.
 - **Evidence is narrow.** The real-data OC table uses one dataset without groups. The back-test applies the gate's pricing to summary statistics, not the full engine, and depends on an implicit search size (K = 10; not significant at K = 5). No third party has reproduced the results yet. [docs/REPRODUCE.md](docs/REPRODUCE.md) gives the one command for that.
 - **Same-account OS lock.** The lock stops accidental reads from the search process, not a deliberate unlock by the same OS account. Full separation means running the label service under its own account.
-- **Symmetric signing key.** Certificates use an HMAC key in `state/`, so a key holder can both verify and sign. Public verifiability would need asymmetric signatures.
+- **Signing.** Certificates carry an HMAC signature and, with the optional `cryptography` package, an Ed25519 public-key signature anyone can verify (`autoresearch public-key` prints the key). The Ed25519 key is derived from the secret key in `state/`, so that file must still be protected.
 - **Shared code, not file-based modules.** The selection null holds the candidate pool fixed rather than re-running the adaptive proposer per permutation (a §12.1 surrogate). Modules call each other in-process rather than communicating only through files.
