@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
+from scipy import stats
 
 from . import metrics
 from .budget import ComplexityBudget
@@ -30,63 +32,154 @@ def _mean_group_delta(y: np.ndarray, groups: np.ndarray, s_cand: np.ndarray, s_b
     return float(np.mean(vals)) if vals else float("nan")
 
 
+def within_group_permuter(groups: np.ndarray):
+    """Return ``permute(values, rng)`` that shuffles values within each group.
+
+    Vectorised: one lexsort per call instead of a Python loop over groups.
+    """
+    codes = pd.factorize(np.asarray(groups))[0]
+    slots = np.argsort(codes, kind="stable")
+
+    def permute(values: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        order = np.lexsort((rng.random(len(codes)), codes))
+        out = np.empty_like(values)
+        out[slots] = values[order]
+        return out
+
+    return permute
+
+
+def context_heterogeneity(
+    y: np.ndarray,
+    groups: np.ndarray,
+    s_cand: np.ndarray,
+    s_base: np.ndarray,
+    labels: np.ndarray,
+    n_boot: int = 200,
+    seed: int = 0,
+    min_groups: int = 5,
+) -> dict[str, Any]:
+    """Does the improvement differ across contexts? (spec §1 ``contexts``)
+
+    Per-context paired delta with a group-bootstrap SE (groups nested in
+    contexts, so contexts are independent), combined in Cochran's Q test.
+    This is the machinery a context-specific claim would rest on, and the
+    machinery the pseudo-group control audits.
+    """
+    labels = np.asarray(labels).astype(str)
+    per: dict[str, dict[str, float]] = {}
+    for level in sorted(set(labels)):
+        m = labels == level
+        if len(set(groups[m])) < min_groups or len(np.unique(y[m])) < 2:
+            continue
+        boot = metrics.group_bootstrap_deltas(y[m], groups[m], s_cand[m], s_base[m], n_boot=n_boot, seed=seed)
+        if len(boot) < 10:
+            continue
+        se = float(np.std(boot, ddof=1))
+        d = float(metrics.auc(y[m], s_cand[m]) - metrics.auc(y[m], s_base[m]))
+        if np.isfinite(d) and se > 0:
+            per[level] = {"delta": d, "se": se, "n_groups": int(len(set(groups[m])))}
+    if len(per) < 2:
+        return {"levels": per, "q": None, "df": 0, "p_value": None}
+    d = np.array([v["delta"] for v in per.values()])
+    w = 1.0 / np.array([v["se"] for v in per.values()]) ** 2
+    pooled = float(np.sum(w * d) / np.sum(w))
+    q = float(np.sum(w * (d - pooled) ** 2))
+    dof = len(per) - 1
+    return {"levels": per, "pooled": pooled, "q": q, "df": dof, "p_value": float(stats.chi2.sf(q, dof))}
+
+
 def pseudo_group_control(
+    contract: Contract,
+    data,
     y: np.ndarray,
     groups: np.ndarray,
     s_cand: np.ndarray,
     s_base: np.ndarray,
     n_splits: int = 20,
-    n_perm: int = 20,
     alpha: float = 0.05,
     seed: int = 0,
+    n_boot: int = 150,
 ) -> dict[str, Any]:
+    """Spec §9: split one homogeneous context at random, call the halves
+    different contexts, run the context machinery. A difference "discovered"
+    between random halves is a sample-size artifact; across many splits the
+    machinery should fire at about alpha.
+    """
+    col = next((c for c in contract.contexts if c in data.columns), None)
+    if col is not None:
+        labels = data[col].astype(str).to_numpy()
+        levels, counts = np.unique(labels, return_counts=True)
+        home = levels[np.argmax(counts)]
+        mask = labels == home
+    else:
+        home, mask = "all units", np.ones(len(y), dtype=bool)
+    yy, gg, sc, sb = y[mask], groups[mask], s_cand[mask], s_base[mask]
+    unique_groups = np.array(sorted(set(gg)))
+    if len(unique_groups) < 10:
+        return {"attack": "pseudo_group", "result": "skip", "critical": False,
+                "note": f"Context {home!r} has fewer than 10 groups; nothing to split."}
     rng = rng_for("pseudo-group", seed, len(y))
-    observed = []
-    nulls = []
-    significant = 0
-    for split_i in range(n_splits):
-        # Split each homogeneous group into two pseudo-contexts. If the machinery
-        # "discovers" that the halves need different answers, that is an artifact.
-        half = np.zeros(len(y), dtype=int)
-        for g in sorted(set(groups)):
-            idx = np.where(groups == g)[0]
-            perm = rng.permutation(idx)
-            half[perm[: len(perm) // 2]] = 1
-        mask_a = half == 0
-        mask_b = half == 1
-        d_a = _delta(y, groups, s_cand, s_base, mask_a)
-        d_b = _delta(y, groups, s_cand, s_base, mask_b)
-        obs = abs(d_a - d_b) if np.isfinite(d_a) and np.isfinite(d_b) else float("nan")
-        observed.append(obs)
-        local_null = []
-        for _ in range(n_perm):
-            shuffled = half.copy()
-            for g in sorted(set(groups)):
-                idx = np.where(groups == g)[0]
-                shuffled[idx] = rng.permutation(shuffled[idx])
-            da = _delta(y, groups, s_cand, s_base, shuffled == 0)
-            db = _delta(y, groups, s_cand, s_base, shuffled == 1)
-            if np.isfinite(da) and np.isfinite(db):
-                local_null.append(abs(da - db))
-        if local_null and np.isfinite(obs):
-            p = (1 + np.sum(np.asarray(local_null) >= obs)) / (len(local_null) + 1)
-            nulls.append(p)
-            if p < alpha:
-                significant += 1
-    false_alarm_rate = significant / max(1, n_splits)
-    result = "pass" if false_alarm_rate <= max(0.15, 2 * alpha) else "fail"
+    p_values = []
+    for _ in range(n_splits):
+        half_a = set(rng.permutation(unique_groups)[: len(unique_groups) // 2])
+        pseudo = np.where(np.isin(gg, list(half_a)), "pseudo_a", "pseudo_b")
+        res = context_heterogeneity(yy, gg, sc, sb, pseudo, n_boot=n_boot, seed=int(rng.integers(1 << 30)))
+        if res["p_value"] is not None:
+            p_values.append(res["p_value"])
+    if not p_values:
+        return {"attack": "pseudo_group", "result": "warn", "critical": True, "note": "No evaluable pseudo-split."}
+    significant = int(np.sum(np.asarray(p_values) < alpha))
+    rate = significant / len(p_values)
+    # Pass while the false-alarm count is plausible under alpha (binomial upper tail >= 1%).
+    tail = float(stats.binom.sf(significant - 1, len(p_values), alpha)) if significant else 1.0
     return {
         "attack": "pseudo_group",
-        "result": result,
+        "result": "pass" if tail >= 0.01 else "fail",
         "critical": True,
-        "n_splits": int(n_splits),
-        "significant_splits": int(significant),
-        "false_alarm_rate": float(false_alarm_rate),
+        "context": col,
+        "split_level": str(home),
+        "n_splits": int(len(p_values)),
+        "significant_splits": significant,
+        "false_alarm_rate": float(rate),
+        "p_value": tail,
         "note": (
-            "Surrogate audit: unit halves inside homogeneous groups. The full context-specific search is the "
-            "production version; this checks the same failure mode at the effect level."
+            f"Random halves of the groups in {col or 'the data'}={home!r} labelled as two contexts and run through "
+            "the context-heterogeneity test. It should fire at about alpha."
         ),
     }
+
+
+def context_report(
+    contract: Contract,
+    data,
+    y: np.ndarray,
+    groups: np.ndarray,
+    s_cand: np.ndarray,
+    s_base: np.ndarray,
+    alpha: float = 0.05,
+    seed: int = 0,
+) -> list[dict[str, Any]]:
+    """Context heterogeneity on every declared context (informational)."""
+    out = []
+    for col in contract.contexts:
+        if col not in data.columns:
+            continue
+        res = context_heterogeneity(y, groups, s_cand, s_base, data[col].to_numpy(), seed=seed)
+        differs = res["p_value"] is not None and res["p_value"] < alpha
+        out.append({
+            "attack": f"context_heterogeneity:{col}",
+            "result": "warn" if differs else "pass",
+            "critical": False,
+            "p_value": res["p_value"],
+            "q": res.get("q"),
+            "levels": res["levels"],
+            "note": (
+                "The improvement differs across these contexts; a single pooled claim may not transfer."
+                if differs else "No evidence the improvement differs across these contexts."
+            ),
+        })
+    return out
 
 
 def outcome_permutation(
@@ -100,12 +193,10 @@ def outcome_permutation(
     seed: int = 0,
 ) -> dict[str, Any]:
     rng = rng_for("outcome-perm", seed, len(y))
+    permute = within_group_permuter(groups)
     null = []
     for _ in range(n_perm):
-        yp = y.copy()
-        for g in sorted(set(groups)):
-            idx = np.where(groups == g)[0]
-            yp[idx] = rng.permutation(yp[idx])
+        yp = permute(y, rng)
         d = _delta(yp, groups, s_cand, s_base)
         if np.isfinite(d):
             null.append(d)
@@ -140,15 +231,14 @@ def feature_permutation(
     rng = rng_for("feature-perm", seed, candidate.id)
     weights = candidate.params.get("weights", {}) or {}
     top = [k for k, _ in sorted(weights.items(), key=lambda kv: -abs(kv[1]))[:3]]
+    permute = within_group_permuter(groups)
     out = []
     for feature in top:
         local = []
+        original = data[feature].to_numpy()
         for _ in range(n_perm):
             dfp = data.copy()
-            for g in sorted(set(groups)):
-                idx = np.where(groups == g)[0]
-                vals = dfp.iloc[idx][feature].to_numpy().copy()
-                dfp.iloc[idx, dfp.columns.get_loc(feature)] = rng.permutation(vals)
+            dfp[feature] = permute(original, rng)
             fmp = FeatureMatrix(dfp, contract, fit=False, fit_stats=candidate.params.get("fit_stats", {}))
             try:
                 sp = fmp.score_candidate(candidate)
@@ -394,9 +484,8 @@ def run_adversary(
     attacks: list[dict[str, Any]] = []
     attacks.append(
         pseudo_group_control(
-            y, groups, cand_scores, baseline,
+            contract, data, y, groups, cand_scores, baseline,
             n_splits=contract.adversary.pseudo_group_splits,
-            n_perm=12,
             alpha=alpha,
             seed=seed + 11,
         )
@@ -421,6 +510,7 @@ def run_adversary(
             seed=seed + 15,
         )
     )
+    attacks.extend(context_report(contract, data, y, groups, cand_scores, baseline, alpha=alpha, seed=seed + 16))
     pf = prespecified_failure(contract, data, cand_scores, baseline, y, groups)
     if pf:
         attacks.append(pf)

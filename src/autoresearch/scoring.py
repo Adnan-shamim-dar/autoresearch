@@ -133,32 +133,28 @@ class FeatureMatrix:
         return pd.to_numeric(self.df[name], errors="coerce").astype(float).to_numpy()
 
     def _group_rank(self, x: np.ndarray) -> np.ndarray:
-        s = pd.Series(x)
+        """Within-group average ranks scaled to [0, 1]; singleton groups get 0.5.
+
+        Vectorised with one groupby: the per-group Python loop this replaces
+        dominated the cost of every search, null and attack.
+        """
+        s = pd.Series(np.asarray(x, dtype=float))
+        by = s.groupby(self.groups, sort=False)
+        r = by.rank(method="average").to_numpy()
+        n = by.transform("size").to_numpy().astype(float)
         out = np.full(len(s), 0.5, dtype=float)
-        for g in pd.unique(self.groups):
-            idx = np.where(self.groups == g)[0]
-            if len(idx) == 0:
-                continue
-            vals = s.iloc[idx]
-            if len(idx) == 1:
-                out[idx] = 0.5
-            else:
-                r = vals.rank(method="average")
-                out[idx] = ((r.to_numpy() - 1.0) / (len(idx) - 1.0)).astype(float)
+        multi = n > 1
+        out[multi] = (r[multi] - 1.0) / (n[multi] - 1.0)
         return out
 
     def _group_z(self, x: np.ndarray) -> np.ndarray:
-        s = pd.Series(x)
+        s = pd.Series(np.asarray(x, dtype=float))
+        by = s.groupby(self.groups, sort=False)
+        mu = by.transform("mean").to_numpy()
+        sd = by.transform(lambda v: v.std(ddof=0)).to_numpy()
+        ok = np.isfinite(sd) & (sd > 0)
         out = np.zeros(len(s), dtype=float)
-        for g in pd.unique(self.groups):
-            idx = np.where(self.groups == g)[0]
-            vals = s.iloc[idx]
-            mu = float(vals.mean())
-            sd = float(vals.std(ddof=0))
-            if not np.isfinite(sd) or sd <= 0:
-                out[idx] = 0.0
-            else:
-                out[idx] = ((vals - mu) / sd).clip(-4, 4).to_numpy()
+        out[ok] = np.clip((s.to_numpy()[ok] - mu[ok]) / sd[ok], -4, 4)
         return out
 
     def array(self, feature: FeatureSpec, transform: str | None = None) -> np.ndarray:

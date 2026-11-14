@@ -24,11 +24,13 @@ from .evaluator import (
     select_on_permuted_outcomes,
     selection_aware_null,
 )
+from .adversary import run_adversary
+from .engine import CODE_FILES
 from .gate import assign_tier
 from .power import assess
 from .proposer import Proposer
 from .scoring import Candidate, FeatureMatrix
-from .utils import atomic_write_json, ensure_dir, now_iso, rng_for
+from .utils import atomic_write_json, ensure_dir, now_iso, rng_for, sha256_obj
 
 # The planted-signal fixture uses the same feature vocabulary as the demo, but
 # the signal scale is tuned per replicate so that the *realised* oracle delta
@@ -47,7 +49,9 @@ TRUTH_WEIGHTS = {
 
 CALIBRATION_LIMITATIONS = [
     "Synthetic substrate: this table demonstrates the gate's operating characteristics; it is not validated instrument performance on real data.",
-    "Adversary passes are held at pass to isolate gate behaviour; the adversary's own false-alarm rate is reported separately when it is calibrated.",
+    "Synthetic-only calibration is not believed (spec §14): the simulation is written by the method's author. A real-data table is still owed.",
+    "The full adversary runs in every replicate; 'Detected' includes its kills. The adversary's own false-alarm rate is reported below.",
+    "Candidates come from the operator-family seed bank (no adaptive generations) to keep replicates affordable.",
     "Effects are planted in a known latent score; the search sees only the contract features, never the planted score.",
     "A refusal caused by the power oracle is counted as a non-detection, because that is what the pipeline would actually emit.",
 ]
@@ -214,10 +218,12 @@ def _confirmation(
 
 
 def _pass_attacks() -> list[dict[str, Any]]:
+    """Every attack held at pass: the gate's verdict with the adversary removed."""
     return [
-        {"attack": "leakage_scan", "result": "pass", "critical": True, "note": "preprocessing hash and split overlap checked"},
-        {"attack": "pseudo_group", "result": "pass", "critical": True, "note": "held at pass in gate calibration"},
-        {"attack": "baseline_advocate", "result": "pass", "critical": False, "note": "held at pass in gate calibration"},
+        {"attack": "leakage_scan", "result": "pass", "critical": True},
+        {"attack": "pseudo_group", "result": "pass", "critical": True},
+        {"attack": "outcome_permutation", "result": "pass", "critical": True},
+        {"attack": "baseline_advocate", "result": "pass", "critical": True},
     ]
 
 
@@ -366,25 +372,57 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
         )
         return row
 
-    decision = assign_tier(
+    def decide(attacks: list[dict[str, Any]]):
+        return assign_tier(
+            contract,
+            selected.to_dict(),
+            observed,
+            {**null_summary, "effective_independent": eff_k, "proposed": len(candidates)},
+            discovery_stability,
+            attacks,
+            power,
+            0.05,
+            calibration_table=None,
+            budget_info=budget.to_dict(),
+        )
+
+    def promoted(dec) -> bool:
+        return bool(dec.tier in ("confirmed", "supported") and dec.verdict == "affirmed")
+
+    # The real red team, exactly as the engine runs it (spec §9: calibrate the
+    # adversary too). The gate is also evaluated without it, so an honest
+    # result the adversary kills is counted as an adversary false alarm.
+    attacks = run_adversary(
         contract,
-        selected.to_dict(),
-        observed,
-        {**null_summary, "effective_independent": eff_k, "proposed": len(candidates)},
-        discovery_stability,
-        _pass_attacks(),
-        power,
-        0.05,
-        calibration_table=None,
-        budget_info=budget.to_dict(),
+        discovery,
+        fm,
+        selected,
+        y,
+        groups,
+        discovery["baseline_score"].to_numpy(),
+        float(selected_result["mean_delta"]),
+        budget,
+        alpha=0.05,
+        seed=seed,
+        validation=contract.validation.to_dict() if contract.validation else None,
+        discovery_groups=sorted(map(str, set(groups))),
+        confirmation_group_hash=sha256_obj(sorted(map(str, confirmation["patient_id"].unique()))),
+        code_files=CODE_FILES,
     )
+    decision = decide(attacks)
+    without = decide(_pass_attacks())
+    failed_critical = [a["attack"] for a in attacks if a.get("critical") and a.get("result") == "fail"]
     row.update(
         {
             "tier": decision.tier,
             "verdict": decision.verdict,
             "claim_type": decision.claim_type,
             "detected_confirmed": bool(decision.tier == "confirmed" and decision.verdict == "affirmed"),
-            "detected_affirmed": bool(decision.tier in ("confirmed", "supported") and decision.verdict == "affirmed"),
+            "detected_affirmed": promoted(decision),
+            "detected_without_adversary": promoted(without),
+            "adversary_killed": bool(promoted(without) and not promoted(decision)),
+            "adversary_failed_critical": failed_critical,
+            "adversary_results": {a["attack"]: a.get("result") for a in attacks},
             "false_positive_alpha": bool(observed["delta"] > 0 and observed["p_one_sided"] <= 0.05),
         }
     )
@@ -447,9 +485,34 @@ def summarize_replicates(rows: list[dict[str, Any]], effects: tuple[float, ...])
                     )
                 ),
                 "power_refusals": int(sum(1 for r in group if r.get("tier") == "power_refusal")),
+                "detect_without_adversary": float(np.mean([bool(r.get("detected_without_adversary", r.get("detected_affirmed"))) for r in group])),
+                "adversary_kills": int(sum(1 for r in group if r.get("adversary_killed"))),
             }
         )
-    return {"rows": table, "fpr_alpha": fpr_alpha, "fpr_decision": fpr_decision}
+    # Adversary false alarm (spec §9): among replicates with a real planted
+    # effect that the gate would promote without the adversary, the fraction
+    # the adversary killed.
+    honest = [r for r in good if float(r.get("target_effect", 0)) > 0 and r.get("detected_without_adversary")]
+    killed = sum(1 for r in honest if r.get("adversary_killed"))
+    lo, hi = _wilson(killed, len(honest)) if honest else (float("nan"), float("nan"))
+    per_attack: dict[str, dict[str, int]] = {}
+    for r in good:
+        if float(r.get("target_effect", 0)) <= 0:
+            continue
+        for name, res in (r.get("adversary_results") or {}).items():
+            slot = per_attack.setdefault(name, {"n": 0, "fail": 0, "warn": 0})
+            slot["n"] += 1
+            if res in ("fail", "warn"):
+                slot[res] += 1
+    adversary = {
+        "honest_promotions": len(honest),
+        "killed": int(killed),
+        "false_alarm_rate": float(killed / len(honest)) if honest else float("nan"),
+        "false_alarm_ci_low": float(lo),
+        "false_alarm_ci_high": float(hi),
+        "per_attack_on_real_effects": per_attack,
+    }
+    return {"rows": table, "fpr_alpha": fpr_alpha, "fpr_decision": fpr_decision, "adversary": adversary}
 
 
 def _render_oc_markdown(payload: dict[str, Any]) -> str:
@@ -467,15 +530,31 @@ def _render_oc_markdown(payload: dict[str, Any]) -> str:
         "fraction of pure-null replicates with a positive confirmation delta and "
         "one-sided p <= alpha; `FPR (decision)` is the fraction the gate actually promoted.",
         "",
-        "| True effect | n | Mean realised effect | Detected | 95% CI | Confirmed | FPR (alpha) | FPR (decision) |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| True effect | n | Mean realised effect | Detected | 95% CI | Confirmed | Without adversary | Adversary kills | FPR (alpha) | FPR (decision) |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in rows:
         lines.append(
             f"| {r['effect']:.3f} | {r['n']} | {r['mean_true_effect']:.3f} | "
             f"{r['detect']:.2f} | {r['detect_ci_low']:.2f}-{r['detect_ci_high']:.2f} | "
-            f"{r.get('detect_confirmed', float('nan')):.2f} | {r['fpr']:.2f} | {r['fpr_decision']:.2f} |"
+            f"{r.get('detect_confirmed', float('nan')):.2f} | {r.get('detect_without_adversary', float('nan')):.2f} | "
+            f"{r.get('adversary_kills', 0)} | {r['fpr']:.2f} | {r['fpr_decision']:.2f} |"
         )
+    adv = payload.get("adversary") or {}
+    if adv.get("honest_promotions"):
+        lines += [
+            "",
+            "## Adversary false-alarm rate (spec §9)",
+            "",
+            f"Of {adv['honest_promotions']} replicates with a real planted effect that the gate would promote without "
+            f"the adversary, the adversary killed {adv['killed']}: false-alarm rate {adv['false_alarm_rate']:.2f} "
+            f"(95% CI {adv['false_alarm_ci_low']:.2f}-{adv['false_alarm_ci_high']:.2f}).",
+            "",
+            "| Attack | Runs on real effects | Fail | Warn |",
+            "|---|---:|---:|---:|",
+        ]
+        for name, c in sorted((adv.get("per_attack_on_real_effects") or {}).items()):
+            lines.append(f"| {name} | {c['n']} | {c.get('fail', 0)} | {c.get('warn', 0)} |")
     lines += [
         "",
         "## Setup",
@@ -515,6 +594,7 @@ def publish_oc_table(root: str | Path, payload: dict[str, Any] | None = None) ->
     payload["rows"] = summary["rows"]
     payload["fpr_alpha"] = summary["fpr_alpha"]
     payload["fpr_decision"] = summary["fpr_decision"]
+    payload["adversary"] = summary["adversary"]
     payload["summarized_at"] = now_iso()
     atomic_write_json(path, payload)
     (root / "calibration" / "oc_table.md").write_text(_render_oc_markdown(payload), encoding="utf-8")
@@ -587,9 +667,10 @@ def run_calibration(
         "generated_at": now_iso(),
         "domain": "immunotherapy synthetic planted-signal fixture",
         "method": (
-            "Replicates use the real contract validator, proposer bank, group-aware CV, selection-aware "
-            "null, sealed-set aggregate confirmation, power oracle and gate. Effects are planted in a "
-            "known latent score and realised on the generated cohort; the search never sees that score."
+            "Replicates use the real contract validator, proposer bank, group-aware CV, discovery-only "
+            "selection-aware null, single-candidate confirmation, power oracle, full adversary and gate. "
+            "Effects are planted in a known latent score and realised on the generated cohort; the search "
+            "never sees that score."
         ),
         "parameters": {
             "reps_per_effect": int(reps),
@@ -603,6 +684,7 @@ def run_calibration(
         },
         "fpr_alpha": float(fpr_alpha),
         "fpr_decision": float(fpr_decision),
+        "adversary": summary["adversary"],
         "rows": table,
         "replicates": [
             {
@@ -620,6 +702,10 @@ def run_calibration(
                 "stability_confirmation": r.get("stability_confirmation"),
                 "detected_confirmed": r.get("detected_confirmed"),
                 "detected_affirmed": r.get("detected_affirmed"),
+                "detected_without_adversary": r.get("detected_without_adversary"),
+                "adversary_killed": r.get("adversary_killed"),
+                "adversary_failed_critical": r.get("adversary_failed_critical"),
+                "adversary_results": r.get("adversary_results"),
                 "false_positive_alpha": r.get("false_positive_alpha"),
             }
             for r in good
