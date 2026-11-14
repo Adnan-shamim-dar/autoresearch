@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autoresearch"
+version = "0.1.0"
+description = "A discovery engine that prices the search and emits claim certificates, or a refusal with a design prescription."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "AutoResearch" }]
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "scipy>=1.11",
+  "scikit-learn>=1.4",
+  "pyyaml>=6.0",
+  "pyarrow>=14.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+autoresearch = "autoresearch.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+autoresearch = ["web/*", "domains/immunotherapy/*.json", "domains/immunotherapy/*.md", "domains/immunotherapy/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["integration: end-to-end runs through the engine (slower; deselect with -m 'not integration')"]

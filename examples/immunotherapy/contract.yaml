@@ -1,0 +1,82 @@
+contract_version: 1
+unit: neoepitope_id
+group: patient_id
+outcome:
+  column: immunogenic
+  type: binary
+  measured_by: validated T-cell recognition (multimer, ELISpot or cytotoxicity)
+candidates:
+  grammar: weighted_rank_fusion
+  max_terms: null
+  features:
+  - name: binding_rank
+    direction: lower_better
+    transform: rank
+    description: Predicted HLA binding percentile rank (lower is a stronger binder)
+  - name: stability
+    direction: higher_better
+    transform: rank
+    description: Predicted pMHC stability half-life (hours)
+  - name: expression
+    direction: higher_better
+    transform: log_rank
+    description: Tumor transcript abundance (TPM, log-rank)
+  - name: foreignness
+    direction: higher_better
+    transform: rank
+    description: Distance from the self-proteome / non-self novelty score
+  - name: presentation
+    direction: higher_better
+    transform: rank
+    description: MS immunopeptidome presentation score
+  - name: self_similarity
+    direction: lower_better
+    transform: rank
+    description: Similarity to a tolerated self-peptide (higher is riskier)
+  - name: processing
+    direction: higher_better
+    transform: rank
+    description: Proteasomal cleavage / antigen-processing score
+  - name: publicness
+    direction: higher_better
+    transform: rank
+    description: Public TCR clonotype frequency in the repertoire
+baseline:
+  name: netmhcpan_binding_only
+  column: baseline_score
+  higher_is_better: true
+  description: Binding affinity alone — the deployed NetMHCpan-style baseline
+metric:
+  primary: paired_delta_auc
+  secondary:
+  - auc
+  - top3_enrichment
+  - frac_improved
+  - mean_pct_rank
+  - rank_coef
+  top_k: 3
+contexts:
+- site
+- indication
+constraints:
+  interpretable: true
+  max_terms: null
+  max_latency_ms: 50
+decision:
+  action: advance the multi-feature prioritization panel to prospective validation
+  smallest_effect_that_matters: 0.04
+  alpha: 0.05
+  target_power: 0.8
+  max_runs: 1
+power:
+  k_candidates: 150
+  confirmation_n: 3873
+  confirmation_groups: 160
+adversary:
+  permutations: 79
+  pseudo_group_splits: 20
+  baseline_advocate_candidates: 24
+provenance:
+  discovery_license: synthetic demo substrate (CC0); replace with real data
+  confirmation_license: synthetic demo substrate (CC0); sealed in the vault
+  notes: TESLA/CEDAR-style schema; not a clinical dataset.

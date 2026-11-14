@@ -1,0 +1,55 @@
+{
+  "domain": "Personalized immunotherapy",
+  "as_of": "November 2026",
+  "note": "Qualitative synthesis of the provided report. Scores are analytical judgment, not investment advice or a certified claim.",
+  "opportunities": [
+    {
+      "rank": 1,
+      "id": "samd_panels",
+      "name": "Epitope / neoantigen SaMD and semi-personalized panels",
+      "market": "Cross-indication demand across NGS, TCR screening and shared-antigen platforms",
+      "unit_economics": "Software/diagnostic margins; semi-personalized mRNA ~$80K COGS vs ~$30K off-the-shelf",
+      "barriers": "DTU commercial licensing; FDA SaMD / EU IVDR; clinical validation of the selection rule",
+      "earning_potential": "Highest capital efficiency: captures oncology, HBV and autoimmunity value without N=1 GMP suites",
+      "capital_efficiency": 5,
+      "risk_adjusted_score": 92,
+      "why": "The certificate itself is the product. The engine can price a selection claim without manufacturing a batch."
+    },
+    {
+      "rank": 2,
+      "id": "hbv_cure",
+      "name": "Chronic HBV functional cure and therapeutic vaccines",
+      "market": ">240M patients globally; ~80% remain uncured even after bepirovirsen approval (Oct 2026)",
+      "unit_economics": "Off-the-shelf mRNA/peptide/ASO batch scale; biologic gross margins approaching >90%",
+      "barriers": "Must improve on bepirovirsen's 19–20% finite cure rate or unlock cirrhotic / HIV-HDV co-infected subgroups",
+      "earning_potential": "Highest volume upside; massive chronic prevalence with a validated finite-cure precedent",
+      "capital_efficiency": 4,
+      "risk_adjusted_score": 86,
+      "why": "Epitope discovery is a real differentiator, and the endpoint is finite and measurable."
+    },
+    {
+      "rank": 3,
+      "id": "autoimmune_reset",
+      "name": "Autoimmune inverse vaccines and orphan-first resets",
+      "market": "Large chronic populations seeking freedom from lifelong immunosuppressants; celiac, SPS, MS, T1D, gMG",
+      "unit_economics": "Ex vivo CAR-T faces cell COGS (~56% GM benchmark); in vivo liver-targeted / mRNA inverse vaccines retain biologic margins",
+      "barriers": "Durable antigen-specific tolerance in Phase 2/3; avoiding CAR-T safety events",
+      "earning_potential": "Highest M&A/licensing demand: 106 autoimmune deals in 2025, second only to oncology",
+      "capital_efficiency": 4,
+      "risk_adjusted_score": 83,
+      "why": "The deal market is paying for validated tolerance, not for another immunosuppressant."
+    },
+    {
+      "rank": 4,
+      "id": "n1_pcv",
+      "name": "De novo N=1 personalized cancer vaccines",
+      "market": "High-incidence adjuvant solid tumours: melanoma, NSCLC, PDAC",
+      "unit_economics": ">$300K estimated COGS; 4–8 week vein-to-vein; scale-out GMP suites; ~56% cell-therapy margin benchmark",
+      "barriers": "Must outperform active checkpoint comparators in 1,100+ patient trials and share revenue with checkpoint owners",
+      "earning_potential": "Lowest standalone return for new entrants without Big Pharma co-development",
+      "capital_efficiency": 2,
+      "risk_adjusted_score": 58,
+      "why": "The clinical benchmark is real, but the manufacturing and comparator economics are brutal."
+    }
+  ]
+}
