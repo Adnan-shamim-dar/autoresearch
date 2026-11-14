@@ -22,6 +22,7 @@ from .evaluator import (
     leave_one_group_out_delta,
     permute_within_groups,
     select_on_permuted_outcomes,
+    interpretability_bill,
     selection_aware_null,
 )
 from .gate import GateDecision, assign_tier
@@ -87,7 +88,8 @@ class RunResult:
 class Engine:
     def __init__(self, config: RunConfig):
         self.config = config
-        self.run_dir = ensure_dir(config.run_dir)
+        self.run_dir = self._fresh_run_dir(Path(config.run_dir))
+        self._suffix = self.run_dir.name[len(Path(config.run_dir).name):]
         self.registry = Registry(config.registry_root)
         self.events: list[dict[str, Any]] = []
         self._seq = 0
@@ -112,8 +114,24 @@ class Engine:
                 pass
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _fresh_run_dir(base: Path) -> Path:
+        """Never overwrite a finished run.
+
+        Run ids are deterministic (contract hash + seed), so a repeat lands on
+        the same name. A finished run (it has run.json) keeps its artifacts; the
+        repeat goes to ``<name>-r2``, ``-r3``, ... and is charged to the ledger
+        like any other run. A directory without run.json is an interrupted run
+        and is reused.
+        """
+        candidate, n = base, 1
+        while (candidate / "run.json").exists():
+            n += 1
+            candidate = base.with_name(f"{base.name}-r{n}")
+        return ensure_dir(candidate)
+
     def _run_id(self, contract: Contract) -> str:
-        return f"ar-{contract.hash[:8]}-{self.config.run_seed}"
+        return f"ar-{contract.hash[:8]}-{self.config.run_seed}{self._suffix}"
 
     def _provenance(self, contract: Contract, meta: dict[str, Any], access_trace: list[dict[str, Any]]) -> dict[str, Any]:
         discovery_hash = sha256_file(self.config.discovery_path)
@@ -188,11 +206,12 @@ class Engine:
             gate_oc=None,
             adversary=[],
             commitments={"registered": True, "prediction_hash": None, "confirmed": False},
-            interpretability_cost={"terms": None, "max_terms": None, "gap_vs_simple": None},
+            interpretability_cost={"terms": None, "max_terms": None, "gap_vs_unconstrained": None},
             refusals=[{"reason_code": reason_code, "message": message}] + (refusals_extra or []),
             reproduce=f"python -m autoresearch power --contract {self.config.contract_path}",
             evidence={"power": power.to_dict() if power else None},
             limitations=(limitations or []) + list(self.config.limitations),
+            expires=self._expires(contract, meta),
             key=None,
         )
         key = load_or_create_key(self.config.key_path or (Path(self.config.registry_root) / "certificate.key"))
@@ -233,6 +252,49 @@ class Engine:
             if p.is_file():
                 files[p.name] = sha256_file(p)
         return files
+
+    @staticmethod
+    def _expires(contract: Contract, meta: dict[str, Any]) -> str | None:
+        """Claims age with their data: valid N days from when confirmation was sealed."""
+        import datetime as _dt
+
+        sealed_at = meta.get("sealed_at")
+        if not sealed_at:
+            return None
+        day = _dt.date.fromisoformat(str(sealed_at)[:10])
+        return (day + _dt.timedelta(days=contract.decision.certificate_valid_days)).isoformat()
+
+    def _procedure_plan(self, contract: Contract, budget: Any, alpha_run: float) -> dict[str, Any]:
+        """The registered procedure: everything that determines the winner."""
+        cfg = self.config
+        package = Path(__file__).parent
+        return {
+            "schema": "autoresearch.procedure/v1",
+            "contract_hash": contract.hash,
+            "discovery_sha256": sha256_file(cfg.discovery_path),
+            "sealed_dataset": cfg.sealed_dataset_hash,
+            "seed": int(cfg.run_seed),
+            "complexity_budget": budget.to_dict(),
+            "search": {
+                "candidate_budget": cfg.candidate_budget or budget.max_candidates,
+                "generations": int(cfg.generations or budget.max_generations),
+                "proposers": ["operator_families"] + (["llm"] if cfg.llm else []),
+                "feedback": "categorical {status, reason_code} via sanitize_feedback",
+                "cv": {"scheme": "group-aware stratified k-fold", "n_splits": int(cfg.n_splits)},
+            },
+            "selection_rule": (
+                "max cross-validated mean paired delta over every evaluated candidate; "
+                "tie-break lower complexity, then candidate id"
+            ),
+            "selection_null": {
+                "statistic": "max cross-validated paired delta over the candidate pool",
+                "permutations": int(min(cfg.n_permutations, contract.adversary.permutations)),
+                "permuted_within": contract.group_column,
+                "data": "discovery only",
+            },
+            "confirmation": {"candidates": 1, "estimand": contract.metric_raw.get("primary"), "alpha": float(alpha_run)},
+            "code_sha256": sha256_obj({p.name: sha256_file(p) for p in sorted(package.glob("*.py"))}),
+        }
 
     def _config_summary(self) -> dict[str, Any]:
         return {
@@ -355,6 +417,21 @@ class Engine:
                 refusals_extra=[{"reason_code": "search_not_priced", "message": "No search was run; searching would not make the question answerable."}],
             )
             return RunResult(self._run_id(contract), self.run_dir, cert, power, self.events)
+
+        # ------------------------------------------------------------------
+        # Register the procedure and selection rule before any candidate
+        # exists (spec §8). The plan is written by the engine, not a person.
+        # ------------------------------------------------------------------
+        run_id = self._run_id(contract)
+        plan = self._procedure_plan(contract, budget, alpha_run)
+        plan_entry = self.registry.register_procedure(contract.hash, run_id, plan)
+        atomic_write_json(self.run_dir / "plan.json", plan)
+        self.emit(
+            "registry",
+            "registered",
+            "Procedure and selection rule registered before the search. The winner is a consequence of this plan.",
+            plan_hash=plan_entry["plan_hash"],
+        )
 
         # ------------------------------------------------------------------
         # Search (discovery labels only; confirmation stays sealed)
@@ -514,12 +591,12 @@ class Engine:
         # ------------------------------------------------------------------
         # Pre-commit the prediction before the sealed set is touched.
         # ------------------------------------------------------------------
-        run_id = self._run_id(contract)
         prediction = {
             "run_id": run_id,
             "contract_hash": contract.hash,
             "candidate_id": selected.id,
             "candidate_hash": sha256_obj(selected.to_dict()),
+            "procedure_hash": plan_entry["plan_hash"],
             "selection_rule": "max cross-validated mean paired delta; tie-break lower complexity, then candidate id",
             "predicted_direction": "positive",
             "predicted_ci_excludes_zero": True,
@@ -661,14 +738,16 @@ class Engine:
         atomic_write_json(self.run_dir / "gate.json", decision.to_dict())
         self.emit("gate", decision.tier, decision.claim, checks=[c for c in decision.checks if not c["ok"]])
 
-        # Interpretability bill: selected rule vs the best single-term rule.
-        single_deltas = [
-            r["mean_delta"]
-            for cid, r in all_results.items()
-            if r.get("status") == "evaluated" and all_candidates[cid].family == "single"
-        ]
-        best_single = max(single_deltas) if single_deltas else None
-        gap = float(best_single - best_result["mean_delta"]) if best_single is not None else None
+        # Interpretability bill (spec §12.5): the readable rule against an
+        # unconstrained model on the same folds.
+        bill = interpretability_bill(
+            contract.data,
+            contract,
+            selected_scores,
+            baseline_scores,
+            assign_folds(self._groups(contract.data, contract), contract.data[contract.outcome_column].to_numpy().astype(int), n_splits=cfg.n_splits, seed=cfg.run_seed),
+            seed=cfg.run_seed,
+        )
 
         provenance = self._provenance(contract, meta, access_trace)
         cert = build_certificate(
@@ -703,15 +782,21 @@ class Engine:
             adversary=attacks,
             commitments={
                 "registered": True,
+                "procedure_hash": plan_entry["plan_hash"],
+                "procedure_registered_before_search": True,
                 "prediction_hash": pred_entry["prediction_hash"],
+                "registered_at": "registry ledger (procedure_registered, prediction_committed); kept out of the certificate so it stays byte-reproducible",
                 "predicted_failure": prediction["predicted_failure"],
                 "confirmed": decision.verdict == "affirmed",
             },
             interpretability_cost={
                 "terms": int(selected.complexity),
                 "max_terms": int(budget.max_terms),
-                "gap_vs_simple": gap,
-                "note": "Multi-term rule minus the best single-term rule on discovery CV. A readable rule buys trust and can cost accuracy.",
+                **bill,
+                "note": (
+                    "Unconstrained model minus the selected rule, paired delta AUC on the same discovery folds. "
+                    "A readable rule buys trust and can cost accuracy; a simple wrong model is acted on without hesitation."
+                ),
             },
             refusals=list(power.warnings) + [a for a in attacks if a.get("result") == "warn"],
             reproduce=f"python -m autoresearch reproduce --run {self.run_dir.name} --seed {cfg.run_seed}",
@@ -744,6 +829,7 @@ class Engine:
                 "The certificate is conditional on the registered contract and selection rule. Changing either invalidates it.",
                 "A refusal is a first-class output; it is not evidence that the hypothesis is false.",
             ] + list(cfg.limitations),
+            expires=self._expires(contract, meta),
             key=None,
         )
         key = load_or_create_key(cfg.key_path or (Path(cfg.registry_root) / "certificate.key"))

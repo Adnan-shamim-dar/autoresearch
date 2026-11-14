@@ -378,6 +378,53 @@ def select_on_permuted_outcomes(
     return candidate_ids[best], float(means_arr[best]), [float(v) for v in dmat[:, best]]
 
 
+def interpretability_bill(
+    data,
+    contract: Contract,
+    rule_scores: np.ndarray,
+    baseline: np.ndarray,
+    folds: list[np.ndarray],
+    seed: int = 0,
+) -> dict[str, Any]:
+    """What the readable rule costs against an unconstrained model (spec §12.5).
+
+    Both are scored on the same group-aware folds against the same baseline.
+    The unconstrained model sees every contract feature with no complexity cap.
+    A positive gap means readability is costing accuracy.
+    """
+    from sklearn.ensemble import HistGradientBoostingClassifier
+
+    y = data[contract.outcome_column].to_numpy().astype(int)
+    names = [f.name for f in contract.features if f.name in data.columns]
+    X = data[names].apply(lambda col: col.astype(float)).to_numpy()
+    all_idx = np.arange(len(y))
+    rule_d, model_d, weights = [], [], []
+    for test_idx in folds:
+        yy = y[test_idx]
+        if len(np.unique(yy)) < 2:
+            continue
+        train_idx = np.setdiff1d(all_idx, test_idx)
+        if len(np.unique(y[train_idx])) < 2:
+            continue
+        model = HistGradientBoostingClassifier(max_iter=200, learning_rate=0.05, random_state=seed)
+        model.fit(X[train_idx], y[train_idx])
+        pred = model.predict_proba(X[test_idx])[:, 1]
+        base_auc = metrics.auc(yy, baseline[test_idx])
+        rule_d.append(metrics.auc(yy, rule_scores[test_idx]) - base_auc)
+        model_d.append(metrics.auc(yy, pred) - base_auc)
+        weights.append(_fold_weight(yy))
+    if not weights:
+        return {"rule_cv_delta": None, "unconstrained_cv_delta": None, "gap_vs_unconstrained": None}
+    rule_cv = float(np.average(rule_d, weights=weights))
+    model_cv = float(np.average(model_d, weights=weights))
+    return {
+        "rule_cv_delta": rule_cv,
+        "unconstrained_cv_delta": model_cv,
+        "gap_vs_unconstrained": model_cv - rule_cv,
+        "unconstrained_model": f"HistGradientBoostingClassifier(max_iter=200, learning_rate=0.05) on {len(names)} features",
+    }
+
+
 def selection_aware_null(
     score_matrix: np.ndarray,
     baseline: np.ndarray,

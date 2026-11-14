@@ -111,6 +111,11 @@ def build_certificate(
         "baseline": contract.baseline.name,
         "smallest_effect_that_matters": contract.decision.smallest_effect_that_matters,
         "decision_action": contract.decision.action,
+        "operating_point": {
+            "alpha": contract.decision.alpha,
+            "target_power": contract.decision.target_power,
+            "chosen_by": contract.decision.alpha_chosen_by,
+        },
         "run_id": run_id,
         "seed": int(seed),
         "provenance": provenance,
@@ -158,6 +163,10 @@ def render_markdown(cert: dict[str, Any]) -> str:
     lines.append(f"- **Run:** `{cert.get('run_id')}`  **Seed:** {cert.get('seed')}")
     lines.append(f"- **Decision action:** {cert.get('decision_action')}")
     lines.append(f"- **Smallest effect that matters:** {cert.get('smallest_effect_that_matters')}")
+    op = cert.get("operating_point") or {}
+    if op:
+        lines.append(f"- **Operating point:** alpha {op.get('alpha')}, power {op.get('target_power')} (chosen by: {op.get('chosen_by')})")
+    lines.append(f"- **Expires:** {cert.get('expires') or 'not set'}")
     lines.append("")
 
     sp = cert.get("search_price") or {}
@@ -189,6 +198,17 @@ def render_markdown(cert: dict[str, Any]) -> str:
         lines.append("| Effect | Detection rate | False-positive rate | Source |")
         lines.append("|---:|---:|---:|---|")
         lines.append(f"| {oc.get('effect')} | {oc.get('detect')} | {oc.get('fpr')} | {oc.get('source')} |")
+        lines.append("")
+
+    ic = cert.get("interpretability_cost") or {}
+    if ic.get("gap_vs_unconstrained") is not None:
+        lines.append("## Interpretability bill")
+        lines.append("")
+        lines.append(
+            f"- Readable rule ({ic.get('terms')} terms, cap {ic.get('max_terms')}): CV delta {ic.get('rule_cv_delta'):.4f}"
+        )
+        lines.append(f"- Unconstrained model: CV delta {ic.get('unconstrained_cv_delta'):.4f}")
+        lines.append(f"- Gap vs unconstrained: {ic.get('gap_vs_unconstrained'):+.4f}")
         lines.append("")
 
     adv = cert.get("adversary") or []

@@ -94,21 +94,37 @@ def test_refusal_is_first_class_and_signed(refused):
     assert cli_main(["--root", str(refused), "verify", "--run", result["run_id"]]) == 0
 
 
-def test_rerun_into_same_dir_does_not_mix_event_logs(refused):
+def test_repeat_run_never_overwrites_a_finished_run(refused):
     first = run_demo(refused, **FAST)
-    run_dir = refused / "runs" / first["run_id"]
-    n_first = len(read_jsonl(run_dir / "events.jsonl"))
-    (run_dir / "user_notes.txt").write_text("keep me", encoding="utf-8")
+    first_dir = refused / "runs" / first["run_id"]
+    before = {p.name: p.read_bytes() for p in first_dir.iterdir()}
 
     second = run_demo(refused, **FAST)
 
-    events = read_jsonl(run_dir / "events.jsonl")
-    assert len(events) == len(second["events"])
+    assert second["run_id"] == first["run_id"] + "-r2"
+    assert {p.name: p.read_bytes() for p in first_dir.iterdir()} == before
+    second_dir = refused / "runs" / second["run_id"]
+    events = read_jsonl(second_dir / "events.jsonl")
     assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
-    assert n_first > 0
-    # Files the engine did not write are never removed.
+    for run_id in (first["run_id"], second["run_id"]):
+        assert cli_main(["--root", str(refused), "verify", "--run", run_id]) == 0
+
+
+def test_interrupted_run_dir_is_reused_without_touching_unknown_files(refused):
+    from autoresearch.contract import load_contract
+
+    info = read_json(refused / "data" / "demo_info.json")
+    contract = load_contract(info["contract_path"], info["discovery_path"])
+    run_dir = refused / "runs" / f"ar-{contract.hash[:8]}-12345"
+    run_dir.mkdir(parents=True)
+    (run_dir / "events.jsonl").write_text(json.dumps({"seq": 1, "stage": "stale"}) + "\n", encoding="utf-8")
+    (run_dir / "user_notes.txt").write_text("keep me", encoding="utf-8")
+
+    result = run_demo(refused, **FAST)
+
+    assert result["run_id"] == run_dir.name
+    assert read_jsonl(run_dir / "events.jsonl")[0]["stage"] != "stale"
     assert (run_dir / "user_notes.txt").read_text(encoding="utf-8") == "keep me"
-    assert cli_main(["--root", str(refused), "verify", "--run", second["run_id"]]) == 0
 
 
 def test_verify_fails_on_tampered_artifact(refused):
@@ -197,3 +213,31 @@ def test_two_processes_produce_byte_identical_artifacts(tmp_path):
         return [{k: v for k, v in e.items() if k != "ts"} for e in events]
 
     assert strip(read_jsonl(da / "events.jsonl")) == strip(read_jsonl(db / "events.jsonl"))
+
+
+def test_procedure_registered_before_search_and_bound_to_certificate(issued):
+    """Spec §8: register the procedure and selection rule; the winner is its consequence."""
+    root, result = issued
+    entries = Registry(root / "state").entries()
+    kinds = [e["type"] for e in entries]
+    assert kinds.index("procedure_registered") < kinds.index("prediction_committed")
+    proc = next(e for e in entries if e["type"] == "procedure_registered")
+    assert proc["authored_by"] == "engine"
+    plan = read_json(root / "runs" / result["run_id"] / "plan.json")
+    from autoresearch.utils import sha256_obj
+
+    assert sha256_obj(plan) == proc["plan_hash"]
+    commitments = result["certificate"]["commitments"]
+    assert commitments["procedure_hash"] == proc["plan_hash"]
+    assert commitments["procedure_registered_before_search"] is True
+
+
+def test_certificate_prints_interpretability_bill_expiry_and_operating_point(issued):
+    """Spec §10 / §12.4 / §12.5."""
+    _root, result = issued
+    cert = result["certificate"]
+    ic = cert["interpretability_cost"]
+    assert ic["gap_vs_unconstrained"] == pytest.approx(ic["unconstrained_cv_delta"] - ic["rule_cv_delta"])
+    assert cert["expires"] and cert["expires"] > "2026-01-01"
+    assert cert["operating_point"]["alpha"] == 0.05
+    assert "chosen_by" in cert["operating_point"]

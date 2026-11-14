@@ -481,6 +481,7 @@ class SealedLabelService:
             "outcome_column": self.contract.outcome_column,
             "group_column": self.contract.group_column,
             "group_ids_hash": self._meta.get("group_ids_hash"),
+            "sealed_at": self._meta.get("created_at"),
             "prevalence": float(np.mean(y)),
             "budget_total": int(self._budget_total),
             "budget_remaining": int(self._budget_remaining),

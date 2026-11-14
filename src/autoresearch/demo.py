@@ -505,7 +505,7 @@ def build_economics_refusal(root: str | Path) -> dict[str, Any]:
         gate_oc=None,
         adversary=[],
         commitments={"registered": True, "prediction_hash": None, "confirmed": False},
-        interpretability_cost={"terms": None, "max_terms": None, "gap_vs_simple": None},
+        interpretability_cost={"terms": None, "max_terms": None, "gap_vs_unconstrained": None},
         refusals=[
             {
                 "reason_code": "not_answerable",

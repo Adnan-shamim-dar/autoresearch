@@ -110,6 +110,37 @@ class Registry:
             }
         )
 
+    def register_procedure(self, contract_hash: str, run_id: str, plan: dict) -> dict:
+        """Register the procedure and selection rule before the search runs (spec §8).
+
+        The plan is machine-authored by the engine and hashed; the winner is a
+        consequence of it. First write wins, so a plan cannot be edited after
+        the fact for the same run id.
+        """
+        plan_hash = sha256_obj(plan)
+        existing = [
+            e
+            for e in self.entries("procedure_registered")
+            if e.get("contract_hash") == contract_hash and e.get("run_id") == run_id
+        ]
+        if existing:
+            if existing[0].get("plan_hash") != plan_hash:
+                raise RegistryError(
+                    f"Run {run_id} already registered a different procedure ({existing[0].get('plan_hash')[:12]}); "
+                    "a changed procedure needs a new run id"
+                )
+            return existing[0]
+        return self._append(
+            {
+                "type": "procedure_registered",
+                "contract_hash": contract_hash,
+                "run_id": run_id,
+                "plan": plan,
+                "plan_hash": plan_hash,
+                "authored_by": "engine",
+            }
+        )
+
     def prediction(self, contract_hash: str, run_id: str) -> dict | None:
         for e in self.entries("prediction_committed"):
             if e.get("contract_hash") == contract_hash and e.get("run_id") == run_id:
@@ -195,6 +226,7 @@ class Registry:
         contracts = self.entries("contract_registered")
         certs = self.entries("certificate_issued")
         predictions = self.entries("prediction_committed")
+        procedures = self.entries("procedure_registered")
         alpha: dict[str, dict] = {}
         for e in self.entries():
             ds = e.get("dataset_id")
@@ -208,6 +240,7 @@ class Registry:
             "contracts_registered": len({c.get("contract_hash") for c in contracts}),
             "contract_events": len(contracts),
             "predictions_committed": len(predictions),
+            "procedures_registered": len(procedures),
             "certificates_issued": len(certs),
             "denominator": len({c.get("contract_hash") for c in contracts}),
             "tiers": tiers,

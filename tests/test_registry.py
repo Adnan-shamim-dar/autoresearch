@@ -96,3 +96,12 @@ def test_deleting_an_entry_breaks_the_chain(registry):
     ok, reason, _ = registry.verify()
     assert not ok
     assert reason == "entry 1 hash mismatch"
+
+
+def test_procedure_registration_is_first_write_wins(registry):
+    plan = {"selection_rule": "max cv delta", "seed": 1}
+    first = registry.register_procedure("c1", "run-1", plan)
+    assert registry.register_procedure("c1", "run-1", dict(plan))["hash"] == first["hash"]
+    with pytest.raises(RegistryError):
+        registry.register_procedure("c1", "run-1", {**plan, "seed": 2})
+    assert registry.summary()["procedures_registered"] == 1

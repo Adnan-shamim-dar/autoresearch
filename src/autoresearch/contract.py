@@ -92,6 +92,9 @@ class DecisionSpec:
     alpha: float = 0.05
     target_power: float = 0.8
     max_runs: int = 1
+    # Spec §12.4: the operating point belongs to the decision, and who set it is recorded.
+    alpha_chosen_by: str = "default: 0.05 is a historical accident, not a decision"
+    certificate_valid_days: int = 180
 
 
 @dataclass
@@ -283,12 +286,18 @@ class Contract:
             raise ContractError("invalid_target_power", "decision.target_power must be in (0, 1)")
         if max_runs < 1:
             raise ContractError("invalid_max_runs", "decision.max_runs must be >= 1")
+        valid_days = int(self.decision_raw.get("certificate_valid_days", 180))
+        if valid_days < 1:
+            raise ContractError("invalid_certificate_valid_days", "decision.certificate_valid_days must be >= 1")
+        chosen_by = self.decision_raw.get("alpha_chosen_by")
         self.decision = DecisionSpec(
             action=str(action),
             smallest_effect_that_matters=float(effect),
             alpha=float(alpha),
             target_power=float(target_power),
             max_runs=max_runs,
+            alpha_chosen_by=str(chosen_by) if chosen_by else DecisionSpec.alpha_chosen_by,
+            certificate_valid_days=valid_days,
         )
 
     def _parse_power(self) -> None:
