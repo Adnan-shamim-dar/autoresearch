@@ -64,6 +64,17 @@ def test_ledgers_verify_and_alpha_was_spent(issued):
     assert registry.alpha_state(ds)["spent"] > 0
 
 
+def test_sealed_set_sees_exactly_one_candidate(issued):
+    """Spec §6: the number of things confirmation data ever sees is one."""
+    root, result = issued
+    confirms = [e for e in Vault(root / "vault").ledger_entries() if e.get("type") == "confirm"]
+    assert len(confirms) == 1
+    assert confirms[0]["purpose"] == "primary confirmation"
+    price = result["certificate"]["search_price"]
+    assert price["sealed_queries"] == 1
+    assert price["selection_null"]["computed_on"].startswith("discovery")
+
+
 def test_event_log_is_one_run_with_unique_sequence(issued):
     root, result = issued
     events = read_jsonl(root / "runs" / result["run_id"] / "events.jsonl")

@@ -378,6 +378,60 @@ def select_on_permuted_outcomes(
     return candidate_ids[best], float(means_arr[best]), [float(v) for v in dmat[:, best]]
 
 
+def selection_aware_null(
+    score_matrix: np.ndarray,
+    baseline: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    folds: list[np.ndarray],
+    candidate_ids: list[str],
+    complexities: dict[str, int],
+    n_permutations: int,
+    rng_parts: tuple[Any, ...],
+) -> dict[str, Any]:
+    """Price the search: the best score the whole search reaches on noise.
+
+    Spec §6: re-run the search on outcomes permuted within the contract's
+    groups, record the best score achieved, repeat; the distribution of those
+    maxima is the bar. Everything here runs on search (discovery) data, so it
+    costs no sealed labels: the confirmation set still sees exactly one
+    candidate. The candidate pool is held fixed across permutations (a
+    surrogate for re-running the adaptive proposer, spec §12.1); the maximum is
+    taken over every evaluated candidate, so the multiplicity of the whole pool
+    is priced.
+    """
+    _cid, observed, _ = select_on_permuted_outcomes(score_matrix, baseline, y, folds, candidate_ids, complexities)
+    maxima: list[float] = []
+    for b in range(int(n_permutations)):
+        rng = rng_for(*rng_parts, b)
+        y_perm = permute_within_groups(y, groups, rng)
+        cid, best, _ = select_on_permuted_outcomes(score_matrix, baseline, y_perm, folds, candidate_ids, complexities)
+        if cid is not None and np.isfinite(best):
+            maxima.append(float(best))
+    summary: dict[str, Any] = {
+        "statistic": "max cross-validated paired delta over the candidate pool",
+        "computed_on": "discovery data only; no sealed labels",
+        "n_candidates": int(len(candidate_ids)),
+        "observed_max_stat": float(observed) if np.isfinite(observed) else None,
+        "n_permutations": int(len(maxima)),
+    }
+    if not maxima or not np.isfinite(observed):
+        summary.update({"p_value": None, "max_stat_p95": None, "null_mean": None, "null_min": None, "null_max": None, "null_max_stats": []})
+        return summary
+    arr = np.asarray(maxima, dtype=float)
+    summary.update(
+        {
+            "p_value": float((1 + np.sum(arr >= observed)) / (len(arr) + 1)),
+            "max_stat_p95": float(np.percentile(arr, 95)),
+            "null_mean": float(np.mean(arr)),
+            "null_min": float(np.min(arr)),
+            "null_max": float(np.max(arr)),
+            "null_max_stats": [float(v) for v in arr],
+        }
+    )
+    return summary
+
+
 def leave_one_group_out_delta(
     y: np.ndarray,
     groups: np.ndarray,

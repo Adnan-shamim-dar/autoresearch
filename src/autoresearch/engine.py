@@ -22,6 +22,7 @@ from .evaluator import (
     leave_one_group_out_delta,
     permute_within_groups,
     select_on_permuted_outcomes,
+    selection_aware_null,
 )
 from .gate import GateDecision, assign_tier
 from .power import Assessment, assess
@@ -578,78 +579,35 @@ class Engine:
         )
 
         # ------------------------------------------------------------------
-        # Selection-aware null: re-run the entire selection on permuted discovery
-        # outcomes, confirm each selected winner on the real sealed labels.
+        # Selection-aware null (spec §6): the best score the whole search reaches
+        # on outcomes permuted within groups. Discovery data only, so the sealed
+        # set still sees exactly one candidate.
         # ------------------------------------------------------------------
-        remaining_budget = int(confirmation.get("budget_remaining", meta.get("budget_remaining", 0)))
-        max_null = max(0, remaining_budget)
-        n_perm = int(min(cfg.n_permutations, contract.adversary.permutations, max_null))
-        null_deltas: list[float] = []
-        null_candidates: list[str] = []
-        if n_perm > 0 and score_cols:
+        n_perm = int(min(cfg.n_permutations, contract.adversary.permutations))
+        if score_cols:
             y = contract.data[contract.outcome_column].to_numpy().astype(int)
             groups = self._groups(contract.data, contract)
             folds = assign_folds(groups, y, n_splits=cfg.n_splits, seed=cfg.run_seed)
-            sm = np.column_stack(score_cols)
-            ids = score_ids
-            for b in range(n_perm):
-                rng = rng_for("selection-null", contract.hash, cfg.run_seed, b)
-                y_perm = permute_within_groups(y, groups, rng)
-                cid, _mean, _folds = select_on_permuted_outcomes(
-                    sm, baseline_scores, y_perm, folds, ids, comp_map
-                )
-                if cid is None:
-                    continue
-                cand_b = all_candidates[cid]
-                try:
-                    res_b = cfg.sealed.confirm(
-                        cand_b.to_dict(),
-                        purpose=f"selection null {b}",
-                        cost=1,
-                        detail="point",
-                        seed=cfg.run_seed + b + 1,
-                    )
-                except BudgetExhausted:
-                    break
-                if res_b.get("delta") is not None and np.isfinite(res_b["delta"]):
-                    null_deltas.append(float(res_b["delta"]))
-                    null_candidates.append(cid)
-                access_trace.append(
-                    {"purpose": f"selection null {b}", "candidate_id": cid, "delta": res_b.get("delta"), "n": res_b.get("n")}
-                )
-                if (b + 1) % 10 == 0:
-                    self.emit("null", "running", f"Selection-aware null: {b + 1}/{n_perm} permutations priced.")
-        observed_delta = float(confirmation.get("point_delta", confirmation.get("delta", float("nan"))))
-        if null_deltas:
-            arr = np.asarray(null_deltas, dtype=float)
-            p_val = float((1 + np.sum(arr >= observed_delta)) / (len(arr) + 1))
-            null_summary = {
-                "n_permutations": int(len(arr)),
-                "p_value": p_val,
-                "max_stat_p95": float(np.percentile(arr, 95)),
-                "null_mean": float(np.mean(arr)),
-                "null_min": float(np.min(arr)),
-                "null_max": float(np.max(arr)),
-                "null_deltas": [float(v) for v in arr],
-                "null_candidate_ids": null_candidates,
-            }
+            null_summary = selection_aware_null(
+                np.column_stack(score_cols),
+                baseline_scores,
+                y,
+                groups,
+                folds,
+                score_ids,
+                comp_map,
+                n_permutations=n_perm,
+                rng_parts=("selection-null", contract.hash, cfg.run_seed),
+            )
         else:
-            null_summary = {
-                "n_permutations": 0,
-                "p_value": None,
-                "max_stat_p95": None,
-                "null_mean": None,
-                "null_min": None,
-                "null_max": None,
-                "null_deltas": [],
-                "null_candidate_ids": [],
-                "note": "No unsealing budget remained for a selection-aware null; the gate cannot certify.",
-            }
+            null_summary = {"n_permutations": 0, "p_value": None, "max_stat_p95": None, "null_mean": None, "null_min": None, "null_max": None}
+        if null_summary["p_value"] is None:
+            null_summary["note"] = "No permutation produced a finite search maximum; the gate cannot certify."
         atomic_write_json(self.run_dir / "selection_null.json", null_summary)
         self.emit(
             "null",
-            "ok" if null_deltas else "warn",
-            f"Selection-aware null priced {len(null_deltas)} attempts.",
+            "ok" if null_summary["p_value"] is not None else "warn",
+            f"Selection-aware null: {null_summary['n_permutations']} full-pool searches on permuted outcomes, discovery data only.",
             p_value=null_summary["p_value"],
             p95=null_summary["max_stat_p95"],
         )
@@ -733,7 +691,10 @@ class Engine:
                     "null_mean": null_summary["null_mean"],
                     "null_min": null_summary["null_min"],
                     "null_max": null_summary["null_max"],
+                    "observed_max_stat": null_summary.get("observed_max_stat"),
+                    "computed_on": null_summary.get("computed_on"),
                 },
+                "sealed_queries": len(access_trace),
                 "clusters": len(clusters),
             },
             gate_oc=decision.gate_oc,

@@ -22,6 +22,7 @@ from .evaluator import (
     evaluate_candidates,
     permute_within_groups,
     select_on_permuted_outcomes,
+    selection_aware_null,
 )
 from .gate import assign_tier
 from .power import assess
@@ -212,23 +213,6 @@ def _confirmation(
     }
 
 
-def _point_confirmation_delta(
-    contract: Contract,
-    confirmation: pd.DataFrame,
-    candidate: Candidate,
-) -> float:
-    fm = FeatureMatrix(
-        confirmation,
-        contract,
-        fit=False,
-        fit_stats=candidate.params.get("fit_stats", {}),
-    )
-    s = fm.score_candidate(candidate)
-    s_base = fm.score_candidate(contract.baseline_candidate())
-    y = confirmation[contract.outcome_column].to_numpy().astype(int)
-    return float(metrics.auc(y, s) - metrics.auc(y, s_base))
-
-
 def _pass_attacks() -> list[dict[str, Any]]:
     return [
         {"attack": "leakage_scan", "result": "pass", "critical": True, "note": "preprocessing hash and split overlap checked"},
@@ -308,35 +292,19 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
     y = discovery[contract.outcome_column].to_numpy().astype(int)
     groups = discovery[contract.group_column].astype(str).to_numpy()
     folds = assign_folds(groups, y, n_splits=n_splits, seed=seed)
-    null_deltas: list[float] = []
-    null_candidates: list[str] = []
-    for b in range(n_permutations):
-        rng = rng_for("calibration-null", seed, b)
-        y_perm = permute_within_groups(y, groups, rng)
-        cid, _mean, _folds = select_on_permuted_outcomes(
-            score_matrix_eff, discovery["baseline_score"].to_numpy(), y_perm, folds, eval_ids, comp_eff
-        )
-        if cid is None:
-            continue
-        cand = next(c for c in candidates if c.id == cid)
-        d = _point_confirmation_delta(contract, confirmation, cand)
-        if np.isfinite(d):
-            null_deltas.append(d)
-            null_candidates.append(cid)
-    if null_deltas:
-        arr = np.asarray(null_deltas)
-        p_sel = float((1 + np.sum(arr >= observed["delta"])) / (len(arr) + 1))
-        null_summary = {
-            "n_permutations": int(len(arr)),
-            "p_value": p_sel,
-            "max_stat_p95": float(np.percentile(arr, 95)),
-            "null_mean": float(np.mean(arr)),
-            "null_min": float(np.min(arr)),
-            "null_max": float(np.max(arr)),
-        }
-    else:
-        p_sel = float("nan")
-        null_summary = {"n_permutations": 0, "p_value": None, "max_stat_p95": None}
+    # Same selection-aware null as the engine: discovery data only.
+    null_summary = selection_aware_null(
+        score_matrix_eff,
+        discovery["baseline_score"].to_numpy(),
+        y,
+        groups,
+        folds,
+        eval_ids,
+        comp_eff,
+        n_permutations=n_permutations,
+        rng_parts=("calibration-null", seed),
+    )
+    p_sel = float(null_summary["p_value"]) if null_summary["p_value"] is not None else float("nan")
 
     power = assess(
         contract,
@@ -381,8 +349,8 @@ def run_one(payload: dict[str, Any]) -> dict[str, Any]:
         "p_selection": p_sel,
         "effective_independent": int(eff_k),
         "proposed": int(len(candidates)),
-        "null_deltas": null_deltas,
-        "null_candidates": null_candidates,
+        "null_max_stats": null_summary.get("null_max_stats", []),
+        "observed_max_stat": null_summary.get("observed_max_stat"),
     }
 
     if power.verdict == "NOT_ANSWERABLE":
