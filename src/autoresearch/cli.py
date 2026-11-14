@@ -722,6 +722,23 @@ def cmd_leak_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backtest(args: argparse.Namespace) -> int:
+    from .backtest import write_results
+
+    root = _root(args)
+    out_dir = root / "docs" / "backtest"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result = write_results(args.data, out_dir / "results.json", out_dir / "RESULTS.md")
+    for key in ("primary", "secondary"):
+        s = result[key]
+        print(
+            f"{key:<9} accepted {s['accepted']:>3} (replicated {fmt_pct(s['accept_rate'])}) | "
+            f"refused {s['refused']:>3} (replicated {fmt_pct(s['refuse_rate'])}) | Fisher p {fmt_num(s['fisher_p'])}"
+        )
+    print(f"Published: {out_dir / 'RESULTS.md'}")
+    return 0
+
+
 def cmd_label_service(args: argparse.Namespace) -> int:
     from .vault import label_service_main
 
@@ -918,6 +935,10 @@ def build_parser() -> argparse.ArgumentParser:
     leak.add_argument("--replicates", type=int, default=100)
     leak.set_defaults(func=cmd_leak_test)
 
+    bt = sub.add_parser("backtest", help="Run the pre-registered replication back-test (milestone 9)")
+    bt.add_argument("--data", required=True, help="RPPdataConverted.xlsx from the RPP repository")
+    bt.set_defaults(func=cmd_backtest)
+
     ls = sub.add_parser(
         "label-service",
         help="Run the sealed label service as its own process (started by the engine; not for direct use)",
@@ -933,7 +954,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 # Commands that are human decision points (spec §12.2): they change what the
 # system has tested, will test, or has disclosed.
-DECISION_COMMANDS = {"init", "demo", "run", "verify-candidate", "calibrate", "publish", "economics", "leak-test"}
+DECISION_COMMANDS = {"init", "demo", "run", "verify-candidate", "calibrate", "publish", "economics", "leak-test", "backtest"}
 
 
 def _log_operator_decision(args: argparse.Namespace, code: int) -> None:
