@@ -148,6 +148,8 @@ class AppState:
 
     def run_detail(self, run_id: str) -> dict[str, Any]:
         # Accept either the run directory name or the certificate run id.
+        if not run_id or run_id in (".", "..") or Path(run_id).name != run_id:
+            raise FileNotFoundError(f"Unknown run: {run_id}")
         candidates = [self.root / "runs" / run_id]
         if not candidates[0].exists():
             for p in (self.root / "runs").glob("*/certificate.json"):
@@ -484,7 +486,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._serve_static("index.html")
                 return
             if path.startswith("/assets/"):
-                self._serve_static(path[len("/assets/") :], prefix="assets")
+                self._serve_static(path[len("/assets/") :])
                 return
             if path == "/favicon.svg":
                 self._serve_static("favicon.svg")
@@ -521,7 +523,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/calibration":
                 cal = _read_optional(self.app.root / "calibration" / "oc_table.json")
-                self._send_json(200, {"ok": True, "table": cal})
+                leak = _read_optional(self.app.root / "calibration" / "feedback_leak.json")
+                if leak:
+                    leak = {k: v for k, v in leak.items() if k != "rows"}
+                self._send_json(200, {"ok": True, "table": cal, "feedback_leak": leak})
                 return
             if path == "/api/ledger":
                 self._send_json(200, {"ok": True, "vault": self.app.vault_summary(), "registry": self.app.registry_summary()})
@@ -643,7 +648,11 @@ class Handler(BaseHTTPRequestHandler):
                 "prevalence_confirmation": info.get("prevalence_confirmation") if info else None,
                 "baseline_auc_discovery": info.get("baseline_auc_discovery") if info else None,
                 "generator": info.get("generator") if info else None,
-                "substrate": "synthetic TESLA/CEDAR-shaped fixture" if info else None,
+                "substrate": (
+                    "real data: Wisconsin Diagnostic Breast Cancer (no groups, signs pre-committed)"
+                    if info.get("domain") == "wdbc" else "synthetic TESLA/CEDAR-shaped fixture"
+                ) if info else None,
+                "domain": (info.get("domain") or "immunotherapy") if info else None,
             },
             "vault": self.app.vault_summary(),
             "registry": self.app.registry_summary(),
@@ -663,7 +672,10 @@ class Handler(BaseHTTPRequestHandler):
             "limits": {
                 "demo": "Synthetic fixture. Not clinical evidence and not the real TESLA/CEDAR data.",
                 "calibration": "Synthetic planted-signal calibration demonstrates the gate; it is not real-data instrument validation.",
-                "label_service": "In-process label service in this build. OS-user separation is a deployment concern.",
+                "label_service": (
+                    "Label service runs as a separate process; sealed files carry an OS read lock. "
+                    "A dedicated OS account for the service is a deployment step."
+                ),
             },
         }
 
