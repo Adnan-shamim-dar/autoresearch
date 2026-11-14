@@ -205,6 +205,7 @@ class Registry:
         existing = [e for e in self.entries("certificate_issued") if e.get("certificate_hash") == cert_hash]
         if existing:
             return existing[0]
+        reasons = [r.get("reason_code") for r in certificate.get("refusals") or [] if isinstance(r, dict) and r.get("reason_code")]
         return self._append(
             {
                 "type": "certificate_issued",
@@ -212,12 +213,59 @@ class Registry:
                 "run_id": run_id,
                 "tier": certificate.get("tier"),
                 "status": certificate.get("status"),
+                "verdict": certificate.get("verdict"),
                 "claim_type": certificate.get("claim_type"),
                 "contract_hash": certificate.get("contract_hash"),
                 "claim": certificate.get("claim"),
+                "reason_codes": reasons,
                 "path": path,
+                # Spec §12.6: every certificate starts private; publication is a later, logged choice.
+                "visibility": "private",
             }
         )
+
+    # ------------------------------------------------------------------
+    # Spec §12.6: refusals are liability records - private by default,
+    # publishable by choice. Publication is an append-only, attributed event.
+    def publish_certificate(self, certificate_hash: str, published_by: str, note: str = "") -> dict:
+        if not any(e.get("certificate_hash") == certificate_hash for e in self.entries("certificate_issued")):
+            raise RegistryError(f"No issued certificate {certificate_hash[:12]}")
+        existing = [e for e in self.entries("certificate_published") if e.get("certificate_hash") == certificate_hash]
+        if existing:
+            return existing[0]
+        return self._append(
+            {"type": "certificate_published", "certificate_hash": certificate_hash, "published_by": published_by, "note": note}
+        )
+
+    def is_published(self, certificate_hash: str) -> bool:
+        return any(e.get("certificate_hash") == certificate_hash for e in self.entries("certificate_published"))
+
+    # Spec §12.7: the refusal taxonomy - why automated discovery fails here.
+    def refusal_taxonomy(self) -> dict[str, Any]:
+        counts: dict[str, int] = {}
+        outcomes: dict[str, int] = {}
+        for e in self.entries("certificate_issued"):
+            if e.get("status") == "refused":
+                outcome = "refused"
+            elif e.get("verdict") == "affirmed":
+                outcome = "affirmed"
+            else:
+                outcome = f"not_affirmed:{e.get('tier')}"
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+            codes = e.get("reason_codes") or ([] if outcome == "affirmed" else [outcome])
+            for code in codes:
+                counts[code] = counts.get(code, 0) + 1
+        return {
+            "runs": sum(outcomes.values()),
+            "outcomes": dict(sorted(outcomes.items(), key=lambda kv: -kv[1])),
+            "reasons": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
+        }
+
+    # Spec §12.2: the human operator is an unmodelled leak. Every decision
+    # point is logged; any decision that re-tests sealed data is also charged
+    # to the alpha ledger by the engine run it triggers.
+    def log_operator_decision(self, command: str, detail: dict[str, Any], outcome: str) -> dict:
+        return self._append({"type": "operator_decision", "command": command, "detail": detail, "outcome": outcome})
 
     def certificate_entries(self) -> list[dict]:
         return self.entries("certificate_issued")
@@ -227,6 +275,7 @@ class Registry:
         certs = self.entries("certificate_issued")
         predictions = self.entries("prediction_committed")
         procedures = self.entries("procedure_registered")
+        decisions = self.entries("operator_decision")
         alpha: dict[str, dict] = {}
         for e in self.entries():
             ds = e.get("dataset_id")
@@ -241,6 +290,8 @@ class Registry:
             "contract_events": len(contracts),
             "predictions_committed": len(predictions),
             "procedures_registered": len(procedures),
+            "operator_decisions": len(decisions),
+            "published": len(self.entries("certificate_published")),
             "certificates_issued": len(certs),
             "denominator": len({c.get("contract_hash") for c in contracts}),
             "tiers": tiers,

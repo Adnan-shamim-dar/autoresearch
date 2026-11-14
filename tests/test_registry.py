@@ -105,3 +105,36 @@ def test_procedure_registration_is_first_write_wins(registry):
     with pytest.raises(RegistryError):
         registry.register_procedure("c1", "run-1", {**plan, "seed": 2})
     assert registry.summary()["procedures_registered"] == 1
+
+
+def test_certificates_start_private_and_publication_is_logged(registry):
+    """Spec §12.6."""
+    registry.issue_certificate({"certificate_hash": "r1", "status": "refused", "refusals": [{"reason_code": "underpowered"}]}, "run-1")
+    assert registry.entries("certificate_issued")[0]["visibility"] == "private"
+    assert not registry.is_published("r1")
+    entry = registry.publish_certificate("r1", published_by="lab lead", note="for the paper")
+    assert registry.is_published("r1")
+    assert entry["published_by"] == "lab lead"
+    with pytest.raises(RegistryError):
+        registry.publish_certificate("never-issued", published_by="x")
+
+
+def test_refusal_taxonomy_aggregates_reasons(registry):
+    """Spec §12.7."""
+    registry.issue_certificate({"certificate_hash": "a", "status": "refused", "refusals": [{"reason_code": "not_answerable"}]}, "r1")
+    registry.issue_certificate({"certificate_hash": "b", "status": "refused", "refusals": [{"reason_code": "not_answerable"}]}, "r2")
+    registry.issue_certificate({"certificate_hash": "c", "status": "issued", "tier": "exploratory", "verdict": "not_affirmed"}, "r3")
+    registry.issue_certificate({"certificate_hash": "d", "status": "issued", "tier": "confirmed", "verdict": "affirmed"}, "r4")
+    tax = registry.refusal_taxonomy()
+    assert tax["runs"] == 4
+    assert tax["outcomes"] == {"refused": 2, "not_affirmed:exploratory": 1, "affirmed": 1}
+    assert tax["reasons"]["not_answerable"] == 2
+    assert tax["reasons"]["not_affirmed:exploratory"] == 1
+
+
+def test_operator_decisions_are_chained(registry):
+    """Spec §12.2."""
+    registry.log_operator_decision("demo", {"reset": True}, "ok")
+    assert registry.entries("operator_decision")[0]["command"] == "demo"
+    assert registry.summary()["operator_decisions"] == 1
+    assert registry.verify()[0]

@@ -43,3 +43,26 @@ def test_leaking_scores_raises_false_positives_and_the_guard_prevents_it():
     assert guarded["fpr"] <= 0.10
     assert leaky["fpr"] >= guarded["fpr"] + 0.15
     assert leaky["mean_delta"] > guarded["mean_delta"]
+
+
+@pytest.mark.parametrize(
+    "cutoff,public_since,risk",
+    [(None, "2019-01-01", True), ("2025-06-01", "2019-01-01", True), ("2018-01-01", "2019-01-01", False)],
+)
+def test_llm_proposals_are_a_separate_tier_with_a_recall_check(monkeypatch, contract, cutoff, public_since, risk):
+    """Spec §12.3: a model whose cutoff postdates the data may be recalling, not proposing."""
+    from types import SimpleNamespace
+
+    from autoresearch.engine import Engine
+    from autoresearch.scoring import make_candidate
+
+    if cutoff:
+        monkeypatch.setenv("AUTORESEARCH_LLM_CUTOFF", cutoff)
+    else:
+        monkeypatch.delenv("AUTORESEARCH_LLM_CUTOFF", raising=False)
+    contract.provenance_raw["data_public_since"] = public_since
+    fake = SimpleNamespace(config=SimpleNamespace(llm=SimpleNamespace(model="some-model")))
+    cand = make_candidate({"expression": 1.0}, mechanism="m", family="llm", source="llm")
+    prov = Engine._proposal_provenance(fake, contract, cand)
+    assert prov["tier"] == "llm" and prov["model"] == "some-model"
+    assert prov["recall_risk"] is risk

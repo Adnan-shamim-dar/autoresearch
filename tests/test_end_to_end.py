@@ -241,3 +241,29 @@ def test_certificate_prints_interpretability_bill_expiry_and_operating_point(iss
     assert cert["expires"] and cert["expires"] > "2026-01-01"
     assert cert["operating_point"]["alpha"] == 0.05
     assert "chosen_by" in cert["operating_point"]
+
+
+def test_private_refusals_and_operator_log_through_the_cli(refused, capsys):
+    """Spec §12.2 and §12.6 at the CLI."""
+    result = run_demo(refused, **FAST)
+    assert cli_main(["--root", str(refused), "certificates"]) == 0
+    listing = capsys.readouterr().out
+    assert "[private refusal:" in listing
+    assert result["certificate"]["claim"][:40] not in listing
+
+    assert cli_main(["--root", str(refused), "publish", "--run", result["run_id"], "--by", "tester"]) == 0
+    capsys.readouterr()
+    assert cli_main(["--root", str(refused), "certificates"]) == 0
+    assert result["certificate"]["claim"][:40] in capsys.readouterr().out
+
+    decisions = Registry(refused / "state").entries("operator_decision")
+    assert [d["command"] for d in decisions] == ["publish"]
+    assert decisions[0]["detail"]["by"] == "tester"
+
+
+def test_selected_candidate_carries_its_proposal_tier(issued):
+    """Spec §12.3: operator-family candidates cannot be recall."""
+    _root, result = issued
+    prov = result["certificate"]["evidence"]["proposal_provenance"]
+    assert prov["tier"] == "operator"
+    assert prov["recall_risk"] is False

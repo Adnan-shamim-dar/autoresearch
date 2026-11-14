@@ -159,12 +159,25 @@ def tool_validate(args: dict[str, Any]) -> dict[str, Any]:
 
 def tool_verify(args: dict[str, Any]) -> dict[str, Any]:
     from .api import verify
+    from .registry import Registry
 
+    root = args.get("root") or _ROOT
+    detail = {k: v for k, v in args.items() if k != "candidate"}
+    try:
+        cert = _verify_call(verify, args, root)
+    except Exception as exc:
+        Registry(Path(root) / "state").log_operator_decision("mcp:autoresearch_verify", detail, f"error {type(exc).__name__}")
+        raise
+    Registry(Path(root) / "state").log_operator_decision("mcp:autoresearch_verify", detail, "ok")
+    return cert
+
+
+def _verify_call(verify, args: dict[str, Any], root: str) -> dict[str, Any]:
     return verify(
         args["contract_path"],
         args["data_path"],
         args["candidate"],
-        root=args.get("root") or _ROOT,
+        root=root,
         sealed_dataset=args.get("sealed_dataset"),
         vault_key=args.get("vault_key"),
         seed=int(args.get("seed", 12345)),

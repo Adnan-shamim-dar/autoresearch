@@ -112,9 +112,37 @@ class Assessment:
     power_curve: dict[str, Any]
     diagnostics: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    operating_points: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def operating_points(
+    effect: float,
+    se: float,
+    k: int,
+    target_power: float,
+    alphas: tuple[float, ...] = (0.005, 0.01, 0.025, 0.05, 0.10),
+) -> list[dict[str, Any]]:
+    """The alpha dial (spec §12.4), each setting priced in the decision's units.
+
+    For every alpha: the search-priced MDE, the chance of detecting the effect
+    that matters, and per 100 decisions where nothing works, how many times the
+    decision's action would be taken on noise.
+    """
+    rows = []
+    for a in alphas:
+        rows.append(
+            {
+                "alpha": float(a),
+                "mde_search": float((_z(1 - a / max(1, k)) + _z(target_power)) * se),
+                "power_at_effect": float(_power_normal(effect, se, a, k)),
+                "wrong_actions_per_100_null_decisions": float(100 * a),
+                "missed_real_effects_per_100": float(100 * (1 - _power_normal(effect, se, a, k))),
+            }
+        )
+    return rows
 
 
 def _designs(
@@ -431,6 +459,7 @@ def assess(
             "prevalence_source": "confirmation_meta" if confirmation_prevalence is not None else "discovery",
         },
         warnings=warnings,
+        operating_points=operating_points(effect, se_conf, k, target_power),
     )
 
 

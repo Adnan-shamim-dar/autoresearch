@@ -356,6 +356,15 @@ def cmd_power(args: argparse.Namespace) -> int:
     print(f"  baseline AUC            : {power.baseline_auc:.3f}")
     print(f"  max K answerable        : {power.max_k_answerable}")
     print(f"  required rows (search)  : {power.required_n_search}")
+    if power.operating_points:
+        print("")
+        print("Operating-point dial (spec 12.4; the operating point belongs to the decision):")
+        print("  alpha   MDE(search)  power@effect  wrong actions/100 null decisions  missed effects/100")
+        for op in power.operating_points:
+            print(
+                f"  {op['alpha']:<7.3f} {op['mde_search']:<12.3f} {op['power_at_effect']:<13.2f} "
+                f"{op['wrong_actions_per_100_null_decisions']:<33.1f} {op['missed_real_effects_per_100']:.1f}"
+            )
     print("")
     print(power.prescription)
     _rule("Design advisor (ranked)")
@@ -386,6 +395,9 @@ def cmd_economics(args: argparse.Namespace) -> int:
 
 
 def cmd_certificates(args: argparse.Namespace) -> int:
+    from .registry import Registry
+
+    registry = Registry(_root(args) / "state")
     root = _root(args)
     rows = []
     for p in sorted((root / "runs").glob("*/certificate.json")):
@@ -393,6 +405,10 @@ def cmd_certificates(args: argparse.Namespace) -> int:
             cert = read_json(p)
         except Exception:
             continue
+        private_refusal = cert.get("status") == "refused" and not registry.is_published(str(cert.get("certificate_hash")))
+        if private_refusal and not args.include_private:
+            reasons = ", ".join(r.get("reason_code", "?") for r in cert.get("refusals") or [] if isinstance(r, dict))
+            cert = {**cert, "claim": f"[private refusal: {reasons or 'refused'}]"}
         rows.append(
             {
                 "run_id": cert.get("run_id"),
@@ -639,6 +655,33 @@ def cmd_serve(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_publish(args: argparse.Namespace) -> int:
+    from .registry import Registry
+
+    root = _root(args)
+    cert = _read_certificate(_resolve_run(root, args.run))
+    entry = Registry(root / "state").publish_certificate(str(cert.get("certificate_hash")), args.by, args.note or "")
+    print(f"Published {cert.get('run_id')} ({cert.get('status')}/{cert.get('tier')}) by {entry['published_by']}.")
+    return 0
+
+
+def cmd_refusals(args: argparse.Namespace) -> int:
+    from .registry import Registry
+
+    tax = Registry(_root(args) / "state").refusal_taxonomy()
+    if args.json:
+        _print_json(tax)
+        return 0
+    print(f"Refusal taxonomy over {tax['runs']} run(s) (spec 12.7)")
+    _rule()
+    for outcome, n in tax["outcomes"].items():
+        print(f"  {outcome:<32} {n}")
+    _rule("reasons")
+    for code, n in tax["reasons"].items():
+        print(f"  {code:<32} {n}")
+    return 0
+
+
 def cmd_verify_candidate(args: argparse.Namespace) -> int:
     from .api import verify
 
@@ -784,6 +827,7 @@ def build_parser() -> argparse.ArgumentParser:
     econ.set_defaults(func=cmd_economics)
 
     certs = sub.add_parser("certificates", help="List issued certificates")
+    certs.add_argument("--include-private", action="store_true", help="Show the text of unpublished refusals")
     certs.add_argument("--json", action="store_true")
     certs.set_defaults(func=cmd_certificates)
 
@@ -838,6 +882,16 @@ def build_parser() -> argparse.ArgumentParser:
     mcp.add_argument("--root", dest="root", default=argparse.SUPPRESS, help="Project root")
     mcp.set_defaults(func=cmd_mcp)
 
+    pub = sub.add_parser("publish", help="Publish a certificate (refusals are private until published)")
+    pub.add_argument("--run", required=True)
+    pub.add_argument("--by", required=True, help="Who decided to publish")
+    pub.add_argument("--note")
+    pub.set_defaults(func=cmd_publish)
+
+    ref = sub.add_parser("refusals", help="Aggregate refusal reasons across every run (the refusal taxonomy)")
+    ref.add_argument("--json", action="store_true")
+    ref.set_defaults(func=cmd_refusals)
+
     vc = sub.add_parser(
         "verify-candidate",
         help="Certify one pre-specified candidate: verify(contract, data, candidate) -> certificate",
@@ -870,11 +924,32 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# Commands that are human decision points (spec §12.2): they change what the
+# system has tested, will test, or has disclosed.
+DECISION_COMMANDS = {"init", "demo", "run", "verify-candidate", "calibrate", "publish", "economics", "leak-test"}
+
+
+def _log_operator_decision(args: argparse.Namespace, code: int) -> None:
+    command = getattr(args, "command", None)
+    if command not in DECISION_COMMANDS:
+        return
+    from .registry import Registry
+
+    detail = {
+        k: (str(v) if isinstance(v, Path) else v)
+        for k, v in vars(args).items()
+        if k not in ("func", "command") and isinstance(v, (str, int, float, bool, type(None), Path))
+    }
+    Registry(_root(args) / "state").log_operator_decision(command, detail, "ok" if code == 0 else f"exit {code}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        return int(args.func(args) or 0)
+        code = int(args.func(args) or 0)
+        _log_operator_decision(args, code)
+        return code
     except ContractError as exc:
         print(f"CONTRACT ERROR [{exc.reason_code}] {exc.message}", file=sys.stderr)
         if exc.details:

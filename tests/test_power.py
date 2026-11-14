@@ -83,3 +83,17 @@ def test_continuous_power_refuses_two_observations():
     assert assessment["verdict"] == "NOT_ANSWERABLE"
     assert assessment["required_n_per_group"] >= 2
     assert "Collect about" in assessment["prescription"]
+
+
+def test_operating_point_dial_prices_each_alpha_in_decision_units():
+    """Spec §12.4: a dial, each setting's cost in the decision's own units."""
+    from autoresearch.power import operating_points
+
+    ops = operating_points(effect=0.04, se=0.012, k=50, target_power=0.8)
+    alphas = [o["alpha"] for o in ops]
+    assert alphas == sorted(alphas) and 0.05 in alphas
+    # Looser alpha: more wrong actions on noise, fewer missed real effects.
+    wrong = [o["wrong_actions_per_100_null_decisions"] for o in ops]
+    missed = [o["missed_real_effects_per_100"] for o in ops]
+    assert wrong == sorted(wrong)
+    assert missed == sorted(missed, reverse=True)

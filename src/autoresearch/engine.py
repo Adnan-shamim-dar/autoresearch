@@ -258,6 +258,37 @@ class Engine:
                 files[p.name] = sha256_file(p)
         return files
 
+    def _proposal_provenance(self, contract: Contract, selected: Candidate) -> dict[str, Any]:
+        """Spec §12.3: the LLM proposer may already know the answer.
+
+        Model-proposed candidates are a separate provenance tier. When the
+        model's declared training cutoff is after the data became public, the
+        "proposal" may be recall, and the certificate says so.
+        """
+        import os
+
+        tier = selected.source or "operator"
+        model = getattr(self.config.llm, "model", None) if tier == "llm" else None
+        cutoff = os.environ.get("AUTORESEARCH_LLM_CUTOFF") if tier == "llm" else None
+        public_since = contract.provenance_raw.get("data_public_since")
+        recall_risk = bool(tier == "llm" and (cutoff is None or (public_since and str(public_since) <= str(cutoff))))
+        if tier != "llm":
+            note = f"Selected candidate came from the {tier} tier; no model could have recalled it."
+        elif cutoff is None:
+            note = "LLM-proposed candidate with no declared model cutoff (AUTORESEARCH_LLM_CUTOFF); recall cannot be ruled out."
+        elif recall_risk:
+            note = f"LLM-proposed candidate; the data was public ({public_since}) before the model cutoff ({cutoff}). It may be recalled, not proposed."
+        else:
+            note = f"LLM-proposed candidate; data public since {public_since}, after the model cutoff {cutoff}."
+        return {
+            "tier": tier,
+            "model": model,
+            "model_cutoff": cutoff,
+            "data_public_since": public_since,
+            "recall_risk": recall_risk,
+            "note": note,
+        }
+
     @staticmethod
     def _fixed_candidate(spec: dict[str, Any], fm: FeatureMatrix) -> Candidate:
         """Accept a full candidate dict or a short spec {weights, transforms?, mechanism?}."""
@@ -793,6 +824,7 @@ class Engine:
         )
 
         provenance = self._provenance(contract, meta, access_trace)
+        proposal_provenance = self._proposal_provenance(contract, selected)
         cert = build_certificate(
             contract=contract,
             run_id=run_id,
@@ -841,9 +873,12 @@ class Engine:
                     "A readable rule buys trust and can cost accuracy; a simple wrong model is acted on without hesitation."
                 ),
             },
-            refusals=list(power.warnings) + [a for a in attacks if a.get("result") == "warn"],
+            refusals=list(power.warnings)
+            + [a for a in attacks if a.get("result") == "warn"]
+            + ([{"reason_code": "possible_recall", "message": proposal_provenance["note"]}] if proposal_provenance["recall_risk"] else []),
             reproduce=f"python -m autoresearch reproduce --run {self.run_dir.name} --seed {cfg.run_seed}",
             evidence={
+                "proposal_provenance": proposal_provenance,
                 "candidate": selected.to_dict(),
                 "baseline": contract.baseline.name,
                 "discovery_delta": float(best_result["mean_delta"]),
