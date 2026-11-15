@@ -5,7 +5,7 @@ Everything AutoResearch claims about itself can be recomputed from this reposito
 ## Quick (about 5 minutes)
 
 ```bash
-git clone <this repository> && cd autoresearch
+git clone https://github.com/Adnan-shamim-dar/autoresearch && cd autoresearch
 pip install -e ".[dev]"
 python scripts/reproduce_proofs.py
 ```
