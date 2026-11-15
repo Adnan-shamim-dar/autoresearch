@@ -780,18 +780,21 @@ def cmd_public_key(args: argparse.Namespace) -> int:
 
 
 def cmd_bench(args: argparse.Namespace) -> int:
-    from .bench import AGENTS, run_bench
+    from .bench import AGENTS, rebuild_leaderboard, run_bench
 
-    agents = list(args.agent or AGENTS)
-    if args.command and "external" not in agents:
-        agents.append("external")
-    payload = run_bench(_root(args), agents, n_tasks=args.tasks, salt=args.salt,
-                        reveal_salt=not args.hide_salt, command=args.command, workers=args.workers)
+    if args.rebuild:
+        payload = rebuild_leaderboard(_root(args))  # re-score saved rows; runs no agent
+    else:
+        agents = list(args.agent or AGENTS)
+        if args.command and "external" not in agents:
+            agents.append("external")
+        payload = run_bench(_root(args), agents, n_tasks=args.tasks, salt=args.salt,
+                            reveal_salt=not args.hide_salt, command=args.command, workers=args.workers)
     for name, s in payload["leaderboard"].items():
         print(
-            f"{name:<16} claims {s['claims']:>4} | false {s['false_discoveries']:>3} | "
-            f"null-task claim rate {fmt_pct(s['null_claim_rate'])} | power {fmt_pct(s['power'])} | "
-            f"strict power {fmt_pct(s['strict_power'])}"
+            f"{name:<16} answered {s['answered']:>4}/{s['tasks']:<4} | claims {s['claims']:>4} | "
+            f"false {s['false_discoveries']:>3} | null-task claim rate {fmt_pct(s['null_claim_rate'])} | "
+            f"power {fmt_pct(s['power'])} | strict power {fmt_pct(s['strict_power'])}"
         )
     print(f"Leaderboard: {_root(args) / 'bench' / 'LEADERBOARD.md'}")
     return 0
@@ -1032,6 +1035,8 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--salt", default="public-dev-v1", help="Task seed; keep it secret and publish its hash for an official run")
     bench.add_argument("--hide-salt", action="store_true")
     bench.add_argument("--workers", type=int, default=0)
+    bench.add_argument("--rebuild", action="store_true",
+                       help="Re-score the saved rows in bench/results.json under the current rules; runs no agent")
     bench.set_defaults(func=cmd_bench)
 
     bt = sub.add_parser("backtest", help="Run the pre-registered replication back-test (milestone 9)")

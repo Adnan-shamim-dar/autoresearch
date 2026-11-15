@@ -235,13 +235,30 @@ def rule_scores(task: Task, claim: dict[str, Any]) -> np.ndarray | None:
     return sum(w * z_rank(task.features[k].to_numpy()) for k, w in valid.items())
 
 
+#: A non-claim with one of these ``detail["stopped"]`` reasons, or with an ``error``, is not a
+#: decision: the agent never answered. Scoring it as a correct silence would reward failure, so
+#: these tasks are labelled ``no_response`` and left out of the rate denominators.
+NON_RESPONSE_STOPS = frozenset({"turn limit", "no submission", "refusal"})
+
+
+def responded(claim: dict[str, Any]) -> bool:
+    """True when the agent returned a decision rather than crashing or running out of turns."""
+    detail = claim.get("detail")
+    if not isinstance(detail, dict):
+        return True
+    return not (detail.get("error") or str(detail.get("stopped", "")) in NON_RESPONSE_STOPS)
+
+
 def score_claim(task: Task, claim: dict[str, Any], seed: int) -> dict[str, Any]:
     claimed = bool(claim.get("claim"))
     out: dict[str, Any] = {"task_id": task.task_id, "source": task.source, "family": task.family, "is_null": task.is_null,
-                           "planted_effect": task.planted_effect, "claimed": claimed}
+                           "planted_effect": task.planted_effect, "claimed": claimed, "responded": True}
     if not claimed:
         refused = bool(claim.get("refused") or (claim.get("detail") or {}).get("tier") == "power_refusal")
         out["refused_underpowered"] = refused
+        if not responded(claim):
+            out.update(responded=False, outcome="no_response")
+            return out
         out["outcome"] = "missed" if not task.is_null else "correct_silence"
         return out
     scores = rule_scores(task, claim)
@@ -470,14 +487,19 @@ def run_task(job: tuple[str, int, str, str | None]) -> dict[str, Any]:
 
 
 def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    nulls = [r for r in rows if r["is_null"]]
-    effects = [r for r in rows if not r["is_null"]]
+    # Rates are over tasks the agent actually answered. A task it never answered is no evidence
+    # either way, and counting a non-answer as a correct silence would flatter a failing agent.
+    answered = [r for r in rows if r.get("responded", True)]
+    nulls = [r for r in answered if r["is_null"]]
+    effects = [r for r in answered if not r["is_null"]]
     claims = [r for r in rows if r["claimed"]]
     false = [r for r in claims if r["outcome"] == "false_discovery"]
     true = [r for r in claims if r["outcome"] == "true_discovery"]
     fp_null = sum(1 for r in nulls if r["claimed"])
     out = {
-        "tasks": len(rows), "null_tasks": len(nulls), "effect_tasks": len(effects), "claims": len(claims),
+        "tasks": len(rows), "answered": len(answered), "no_response": len(rows) - len(answered),
+        "response_rate": len(answered) / len(rows) if rows else None,
+        "null_tasks": len(nulls), "effect_tasks": len(effects), "claims": len(claims),
         "false_discoveries": len(false), "true_discoveries": len(true),
         "false_claim_share": len(false) / len(claims) if claims else None,
         "false_claim_share_ci": _wilson(len(false), len(claims)),
@@ -515,6 +537,9 @@ def rebuild_leaderboard(root: str | Path) -> dict[str, Any]:
     for r in payload["rows"]:
         if not r["claimed"]:
             r["refused_underpowered"] = (r.get("detail") or {}).get("tier") == "power_refusal"
+            r["responded"] = responded(r)
+            if not r["responded"]:
+                r["outcome"] = "no_response"
     agents = list(payload["leaderboard"])
     payload["leaderboard"] = {a: summarise([r for r in payload["rows"] if r["agent"] == a]) for a in agents}
     payload["results_hash"] = sha256_obj({k: v for k, v in payload.items() if k not in ("generated_at", "results_hash")})
@@ -586,12 +611,12 @@ def to_markdown(payload: dict[str, Any]) -> str:
         f"{p['n_tasks']} tasks on 4 real datasets with planted outcomes; about half are null. "
         f"Salt SHA-256 `{payload['salt_sha256'][:16]}…`. Results hash `{payload['results_hash'][:16]}…`.",
         "",
-        "| Agent | Claims | False claims | Claims on null tasks | Claims on pure-noise (dredge) nulls | Real effects found | Strict: false claims (gain < min effect) | Strict: effects found | Refused as underpowered |",
-        "|---|---:|---|---|---|---|---|---|---:|",
+        "| Agent | Answered | Claims | False claims | Claims on null tasks | Claims on pure-noise (dredge) nulls | Real effects found | Strict: false claims (gain < min effect) | Strict: effects found | Refused as underpowered |",
+        "|---|---|---:|---|---|---|---|---|---|---:|",
     ]
     for name, s in payload["leaderboard"].items():
         lines.append(
-            f"| {name} | {s['claims']} | {s['false_discoveries']} ({_pct(s['false_claim_share'])}) | "
+            f"| {name} | {s['answered']}/{s['tasks']} ({_pct(s['response_rate'])}) | {s['claims']} | {s['false_discoveries']} ({_pct(s['false_claim_share'])}) | "
             f"{_pct(s['null_claim_rate'])} ({_ci(s['null_claim_rate_ci'])}) | {_pct(s['dredge_null_claim_rate'])} of {s['dredge_null_tasks']} | "
             f"{_pct(s['power'])} ({_ci(s['power_ci'])}) | {s['strict_false_discoveries']} ({_pct(s['strict_false_claim_share'])}) | "
             f"{_pct(s['strict_power'])} | {s['refused_underpowered']} |"
@@ -616,6 +641,10 @@ def to_markdown(payload: dict[str, Any]) -> str:
         f"- A claim is a **true discovery** only if the task has a planted effect and the submitted rule's expected AUC "
         f"over {p['mc_draws']} fresh outcome draws beats the baseline's. This is lenient: any positive gain counts.",
         "- Every claim on a null task is a false discovery.",
+        "- **Rates are over answered tasks.** If an agent crashes, declines or runs out of turns it is recorded as "
+        "`no_response` and that task leaves both denominators: a non-answer is no evidence either way, and counting "
+        "it as a correct silence would reward an agent for failing. Read the Answered column first — a low "
+        "null-task claim rate on few answered tasks says little.",
         "- Datasets: " + "; ".join(f"{s['name']} ({s['citation']})" for s in payload["sources"]) + ".",
         "- Submit your own agent: `autoresearch bench --agent external --command \"python my_agent.py {task_dir}\"`. "
         "It receives task.json, discovery.csv and unlabelled.csv and writes claim.json "

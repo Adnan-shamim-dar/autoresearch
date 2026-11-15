@@ -25,7 +25,7 @@ import pandas as pd
 from scipy import stats
 
 MODEL = os.environ.get("AUTORESEARCH_LLM_MODEL", "claude-opus-5-5")
-MAX_TURNS = 20
+MAX_TURNS = int(os.environ.get("AUTORESEARCH_LLM_MAX_TURNS", "24"))
 
 SYSTEM = (
     "You are a data analyst. You will be asked whether a rule over the given features ranks a binary "

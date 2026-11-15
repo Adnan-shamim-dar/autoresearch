@@ -76,3 +76,18 @@ A dated record of what was built, what was decided and why, and what the results
 - Published: https://github.com/Adnan-shamim-dar/autoresearch (public, Apache-2.0). A clone from GitHub was checked.
 - Outreach, first batch, sent by email on the user's instruction: Institute for Replication and Center for Open Science (independent reproduction requests), FutureHouse (offer to benchmark their agent). Replies and follow-ups are tracked outside the repository.
 - Real-LLM pilot (pipeline check only, not evidence): 8 tasks, `nvidia/nemotron-3.5-super-vl:free` through OpenRouter. The model ran 8-18 rule evaluations per task. It hit the turn limit without submitting on 4 tasks, the last task failed on the free tier's rate limit, and of the 3 it finished it made one true discovery and one false claim on a pure-noise task. Eight tasks say nothing statistically. The pilot shows the external-agent pipeline works with a real model and that the turn limit (8) is too low; a meaningful run needs paid credits and about 200 tasks.
+
+## 2026-11-15 (later): a scoring defect the pilot exposed
+
+The pilot's own result table is what found this. Two of the four tasks the model abandoned at the turn limit were printed as `correct_silence`, because the scorer treated any non-claim on a null task as a deliberate silence. Under that rule an agent that crashes on every task scores a perfect false-discovery rate. The pilot's "1 true discovery, 1 correct silence, 1 false claim" line was itself produced by the flawed rule.
+
+Fixed in `bench.py`:
+
+- A non-claim whose `detail` carries an `error`, or a `stopped` reason of `turn limit`, `no submission` or `refusal`, is now labelled `no_response`. It is not a decision, so it is not scored as one.
+- `summarise()` computes the null-task claim rate and power over **answered** tasks only, and reports `answered`, `no_response` and `response_rate`. An unanswered task is no evidence either way; keeping it in the denominator would reward failure.
+- The leaderboard's first column is now the answered count, and both the Markdown rules section and the CLI line print it, so a clean rate on three answered tasks cannot be read as a clean rate.
+- `autoresearch bench --rebuild` re-scores saved rows under the current rules without running an agent. `rebuild_leaderboard` existed but had no CLI path; now it does.
+
+**The pre-registered 300-task evaluation is unchanged.** Its 1,500 rows contain zero non-responses (the reference agents always answer), and re-scoring them with `--rebuild` reproduces every published number exactly: null-task claim rates 0%, 0%, 2.8%, 10.6%, 16.9% and power 10.1%, 40.5%, 68.4%, 82.3%, 96.2%. This is stated because changing a scoring rule after pre-registration is precisely the move a referee should distrust, so the check is on the record rather than asserted.
+
+Also fixed: the default turn limit was 8 in the OpenRouter agent, which caused half the pilot's non-answers. Both example agents now default to 24 turns and read `AUTORESEARCH_LLM_MAX_TURNS`.

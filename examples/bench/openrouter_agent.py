@@ -29,7 +29,7 @@ _spec.loader.exec_module(_shared)
 
 MODEL = os.environ.get("AUTORESEARCH_OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
 URL = "https://openrouter.ai/api/v1/chat/completions"
-MAX_TURNS = int(os.environ.get("AUTORESEARCH_LLM_MAX_TURNS", "8"))
+MAX_TURNS = int(os.environ.get("AUTORESEARCH_LLM_MAX_TURNS", "24"))
 
 TOOLS = [
     {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
