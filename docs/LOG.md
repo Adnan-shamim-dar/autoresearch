@@ -59,3 +59,9 @@ A dated record of what was built, what was decided and why, and what the results
 
 - `examples/bench/llm_agent.py`: a Claude analyst (`claude-opus-5-5`, effort medium, manual tool loop) with the tools `evaluate_rule` and `submit_claim`. Server-side refusal fallback is on (`fallbacks: "default"`). The tool logic is tested locally. **The API path is untested: there is no key on this machine.** Each task costs money, so start with about 40 tasks.
 - Certificates now carry an Ed25519 public-key signature next to the HMAC one. The key is derived from the existing secret, and signatures are deterministic, so certificates stay byte-reproducible. Verify with `autoresearch public-key`. `cryptography` is an optional dependency (`pip install -e ".[sign]"`). It was installed into the project's Python 3.14; `pip` on PATH points at a different Python (3.11).
+
+## 2026-11-15: release-readiness pass
+
+- Tested the buyer's first experience: fresh clone, clean virtual environment, `scripts/reproduce_proofs.py`. **It failed**: the back-test check needed `openpyxl`, which was installed on the dev machine but never declared. Fixed in `pyproject.toml`; a second fresh clone passes all four checks.
+- Added `LICENSE` (Apache-2.0, matching what `pyproject.toml` already declared; the user can still change it before publishing) and a GitHub Actions workflow (tests and the reproduction kit on Linux and Windows). The workflow has never run: there is no remote yet.
+- Status: release-ready for publishing. Not "perfect": no outside reproduction yet, no real LLM agent measured yet, and one-shot holdouts still find more effects than the engine does.
