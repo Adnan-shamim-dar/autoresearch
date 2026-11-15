@@ -87,6 +87,34 @@ def cmd_init(args: argparse.Namespace) -> int:
     from .demo import write_demo_files
 
     root = _root(args)
+    if args.domain == "custom":
+        from . import custom
+        from .utils import atomic_write_json
+
+        if not (args.data and args.outcome and args.baseline):
+            print("--domain custom needs --data FILE --outcome COLUMN --baseline COLUMN")
+            return 1
+        for sub in ("vault", "state", "runs"):
+            if (root / sub).exists():
+                shutil.rmtree(root / sub)
+        try:
+            info = custom.write_files(
+                root, args.data, args.outcome, args.baseline, group=args.group, unit=args.unit,
+                features=args.features, positive=args.positive, baseline_higher=not args.baseline_lower_is_better,
+                effect=args.effect, seed=args.seed, if_underpowered=args.if_underpowered,
+                chosen_by=args.by or "operator at the command line",
+            )
+        except ContractError as exc:
+            print(f"Cannot build the contract: [{exc.reason_code}] {exc.message}")
+            return 1
+        atomic_write_json(root / "data" / "demo_info.json", info)
+        print(f"Custom domain under {root}: {info['n_discovery']} discovery / {info['n_confirmation']} sealed rows, {info['n_features']} features")
+        print(f"  question       : {info['brief']}")
+        print(f"  contract       : {info['contract_path']}  (edit it before running if you wish)")
+        print(f"  contract hash  : {info['contract_hash']}")
+        print()
+        print("Next: autoresearch demo --skip-economics")
+        return 0
     if args.domain == "wdbc":
         from . import wdbc
         from .utils import atomic_write_json
@@ -829,10 +857,21 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--seed", type=int, default=20261114)
     init.add_argument(
         "--domain",
-        choices=["immunotherapy", "wdbc"],
+        choices=["immunotherapy", "wdbc", "custom"],
         default="immunotherapy",
-        help="immunotherapy: synthetic TESLA/CEDAR-shaped demo; wdbc: real breast-cancer data, no groups, signs pre-committed",
+        help="immunotherapy: synthetic TESLA/CEDAR-shaped demo; wdbc: real breast-cancer data, no groups, signs pre-committed; custom: your own CSV (--data --outcome --baseline)",
     )
+    init.add_argument("--data", help="custom domain: CSV file")
+    init.add_argument("--outcome", help="custom domain: binary outcome column")
+    init.add_argument("--baseline", help="custom domain: column of the criterion in use today")
+    init.add_argument("--group", help="custom domain: grouping column (patient, site, batch); splits and inference respect it")
+    init.add_argument("--unit", help="custom domain: row id column (generated if absent)")
+    init.add_argument("--features", nargs="+", help="custom domain: feature columns (default: every numeric column)")
+    init.add_argument("--positive", help="custom domain: outcome value that counts as 1")
+    init.add_argument("--baseline-lower-is-better", action="store_true")
+    init.add_argument("--effect", type=float, default=0.05, help="custom domain: smallest AUC gain that matters")
+    init.add_argument("--if-underpowered", choices=["refuse", "proceed"], default="refuse")
+    init.add_argument("--by", help="who chose --if-underpowered proceed")
     init.add_argument("--patients", type=int, default=480)
     init.add_argument("--confirm-groups", type=int, default=160)
     init.set_defaults(func=cmd_init)

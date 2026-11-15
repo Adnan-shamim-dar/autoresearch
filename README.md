@@ -2,10 +2,11 @@
 
 A discovery engine that **prices the search before it runs**, and then issues either a signed **claim certificate** or a first-class **refusal with a design prescription**.
 
-The engine is domain-general and ships with two domains:
+The engine is domain-general. It works on **any table with a yes/no outcome and a criterion you use today**: which patients respond, which loans default, which parts fail, which leads convert. It ships with two worked domains and a one-command path for your own data:
 
 - **Immunotherapy** (neoantigen immunogenicity ranking) on a **synthetic** TESLA/CEDAR-shaped substrate.
 - **WDBC**: real breast-cancer data with no groups and pre-committed signs.
+- **Custom**: your own CSV (see [Use it on your own data](#use-it-on-your-own-data)).
 
 Nothing here is clinical evidence. Section-by-section status against the build specification is in [docs/SPEC_COVERAGE.md](docs/SPEC_COVERAGE.md).
 
@@ -39,11 +40,23 @@ autoresearch --root wdbc init --domain wdbc   # second domain: real data
 autoresearch --root wdbc demo --skip-economics
 ```
 
+### Use it on your own data
+
+```bash
+autoresearch --root myproject init --domain custom --data mydata.csv \
+    --outcome defaulted --baseline credit_score --group branch --effect 0.03
+autoresearch --root myproject demo --skip-economics
+```
+
+`--outcome` is a binary column (`--positive VALUE` if it isn't 0/1), `--baseline` is the score or measurement you rely on today, and `--group` is optional (patient, site, batch: anything rows cluster by). Every other numeric column becomes a candidate feature unless you pass `--features`. The command splits the rows, seals the confirmation split, and writes an editable contract to `myproject/examples/custom/contract.yaml`. Everything that shapes a run is in that file: the question, the smallest effect that matters, α, the search budget, the red-team settings and what to do when the question is underpowered.
+
+What it does not cover yet: continuous or time-to-event outcomes, and text or image inputs. Those need to be turned into a binary outcome and numeric columns first.
+
 Without installing, run commands as `python -m autoresearch ...` with `PYTHONPATH=src`. Every command takes `--root <dir>` first (default: the current directory).
 
 | Command | Purpose |
 |---|---|
-| `init [--domain immunotherapy\|wdbc]` | Build a substrate and seal its confirmation set |
+| `init [--domain immunotherapy\|wdbc\|custom]` | Build a substrate and seal its confirmation set; `custom` takes your CSV |
 | `demo [--reset]` | End-to-end run; `--reset` rebuilds the substrate (the calibration table is kept) |
 | `run --contract C --discovery D --dataset H --vault-root V --key K` | Engine on your own contract and sealed dataset |
 | `verify-candidate --contract C --discovery D --candidate JSON` | `verify(contract, data, candidate) -> certificate`, priced at K = 1 |
@@ -102,7 +115,7 @@ The adversary killed **0 of 39** honest promotions (95% CI 0–9%). The gate is 
 | `calibration.py`, `calibration_real.py`, `feedback_leak.py` | OC harness (synthetic and real-data plasmode); spec §5 leak test |
 | `backtest.py` | Pre-registered replication back-test |
 | `bench.py` | Discovery Validity Benchmark: tasks, reference agents, external-agent protocol, scoring |
-| `demo.py`, `wdbc.py` | The two domains |
+| `demo.py`, `wdbc.py`, `custom.py` | The two worked domains; bring-your-own-CSV |
 | `cli.py`, `server.py`, `mcp_server.py`, `web/` | Interfaces |
 
 ## Reproduce

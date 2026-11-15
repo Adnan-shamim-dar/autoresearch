@@ -28,7 +28,7 @@ A dated record of what was built, what was decided and why, and what the results
 - Plasmode design on 569 real WDBC tumours, 100 replicates per effect: 0/100 null promotions; detection 0% up to a true AUC gain of 0.10, 44% at 0.15. The binding check was the selection-aware null.
 - Bug found and fixed: in calibration only, for no-group data, the leakage scan compared `__all__` with `__all__` and flagged an overlap that wasn't there. The engine itself was unaffected.
 - `scripts/reproduce_proofs.py` recomputes the evidence from public data. It passed from a clean folder.
-- The sales package was written outside the repo: `C:\Users\rambe\Desktop\autoresearch-sales\`.
+- The sales package was written in a separate folder outside the repo.
 
 ## 2026-11-14: "do we have anything impressive?" → Discovery Validity Benchmark (eb7a96f)
 
@@ -65,3 +65,10 @@ A dated record of what was built, what was decided and why, and what the results
 - Tested the buyer's first experience: fresh clone, clean virtual environment, `scripts/reproduce_proofs.py`. **It failed**: the back-test check needed `openpyxl`, which was installed on the dev machine but never declared. Fixed in `pyproject.toml`; a second fresh clone passes all four checks.
 - Added `LICENSE` (Apache-2.0, matching what `pyproject.toml` already declared; the user can still change it before publishing) and a GitHub Actions workflow (tests and the reproduction kit on Linux and Windows). The workflow has never run: there is no remote yet.
 - Status: release-ready for publishing. Not "perfect": no outside reproduction yet, no real LLM agent measured yet, and one-shot holdouts still find more effects than the engine does.
+
+## 2026-11-15: any-dataset path, real-LLM pilot, publication
+
+- User instruction: finish the job completely, take identity from the portfolio and the model key from opencode, publish, and do the outreach. This replaces the earlier per-batch approval rule.
+- **Custom domain** (`init --domain custom`): any CSV with a binary outcome and a baseline column becomes a sealed, contracted run in one command. Tested end to end on housing data (non-medical) and on a grouped dataset. Limits stated in the README: binary outcomes and numeric features only.
+- **OpenRouter agent** (`examples/bench/openrouter_agent.py`): the opencode credential is a free-tier OpenRouter key (free models only, small daily cap), so only a small pilot is possible. The key is read from the environment at run time and is never written to the repository.
+- Pre-publication scan of all tracked files and history: no keys, passwords or personal paths (one local path removed from this log).
